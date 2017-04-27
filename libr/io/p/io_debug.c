@@ -227,12 +227,16 @@ static RRunProfile* _get_run_profile(RIO *io, int bits, char **argv) {
 		rp->_args[i] = argv[i];
 	}
 	rp->_args[i] = NULL;
-	rp->_program = argv[0];
+	rp->_program = strdup (argv[0]);
 	rp->_dodebug = true;
 	if (io->runprofile && *io->runprofile) {
 		if (!r_run_parsefile (rp, io->runprofile)) {
 			eprintf ("Can't find profile '%s'\n", io->runprofile);
+			r_run_free (rp);
 			return NULL;
+		}
+		if (strstr (io->runprofile, R_SYS_DIR ".rarun2.")) {
+			(void)r_file_rm (io->runprofile);
 		}
 	}
 	if (bits == 64) {
@@ -243,6 +247,7 @@ static RRunProfile* _get_run_profile(RIO *io, int bits, char **argv) {
 	free (expr);
 	if (r_run_config_env (rp)) {
 		eprintf ("Can't config the environment.\n");
+		r_run_free (rp);
 		return NULL;
 	}
 	return rp;
