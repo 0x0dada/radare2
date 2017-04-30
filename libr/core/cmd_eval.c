@@ -214,6 +214,9 @@ static int cmd_eval(void *data, const char *input) {
 	case 'j': // json
 		r_config_list (core->config, NULL, 'j');
 		break;
+	case 'v': // verbose
+		r_config_list (core->config, input + 1, 'v');
+		break;
 	case 'q': // quiet list of eval keys
 		r_config_list (core->config, NULL, 'q');
 		break;
@@ -351,7 +354,6 @@ static int cmd_eval(void *data, const char *input) {
 		r_core_config_init (core);
 		//eprintf ("BUG: 'e-' command locks the eval hashtable. patches are welcome :)\n");
 		break;
-	case 'v': eprintf ("Invalid command '%s'. Use 'e?'\n", input); break;
 	case '*': r_config_list (core->config, NULL, 1); break;
 	case '?':
 		switch (input[1]) {
@@ -362,7 +364,7 @@ static int cmd_eval(void *data, const char *input) {
 			"Usage:", "e [var[=value]]", "Evaluable vars",
 			"e","?asm.bytes", "show description",
 			"e", "??", "list config vars with description",
-			"e", "", "list config vars",
+			"ej", "", "list config vars in JSON",
 			"e-", "", "reset config vars",
 			"e*", "", "dump config vars in r commands",
 			"e!", "a", "invert the boolean value of 'a' var",
@@ -370,6 +372,8 @@ static int cmd_eval(void *data, const char *input) {
 			"er", " [key]", "set config key as readonly. no way back",
 			"ec", " [k] [color]", "set color for given key (prompt, offset, ...)",
 			"et", " [key]", "show type of given config variable",
+			"ev", " [key]", "list config vars in verbose format",
+			"evj", " [key]", "list config vars in verbose format in JSON",
 			"e", " a", "get value of var 'a'",
 			"e", " a=b", "set var 'a' the 'b' value",
 			"e var=?", "", "print all valid values of var",

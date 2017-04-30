@@ -887,8 +887,12 @@ static int analop64_esil(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int l
 			"%"PFMT64d",%s,=", IMM64(1), REG64(0));
 		break;
 	case ARM64_INS_MADD:
-		r_strbuf_setf (&op->esil,
-			"%s,%s,*,%s,+,%s,=",REG64(2),REG64(1),REG64(3), REG64(0));
+		r_strbuf_setf (&op->esil, "%s,%s,*,%s,+,%s,=",
+			REG64 (2), REG64 (1), REG64 (3), REG64 (0));
+		break;
+	case ARM64_INS_MSUB:
+		r_strbuf_setf (&op->esil, "%s,%s,*,%s,-,%s,=",
+			REG64 (2), REG64 (1), REG64 (3), REG64 (0));
 		break;
 	case ARM64_INS_DMB:
 	case ARM64_INS_DSB:
@@ -970,8 +974,7 @@ static int analop64_esil(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int l
 		r_strbuf_setf (&op->esil, "pc,lr,=,%"PFMT64d",pc,=", IMM64 (0));
 		break;
 	case ARM64_INS_BLR:
-		// XXX
-		r_strbuf_setf (&op->esil, "pc,lr,=,%"PFMT64d",pc,=", IMM64 (0));
+		r_strbuf_setf (&op->esil, "pc,lr,=,%s,pc,=", REG64 (0));
 		break;
 	case ARM64_INS_LDUR:
 	case ARM64_INS_LDR:
@@ -1045,14 +1048,25 @@ static int analop64_esil(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int l
 	case ARM64_INS_CMP: // cmp w8, 0xd
 	case ARM64_INS_CMN: // cmp w8, 0xd
 		// update esil, cpu flags
-		r_strbuf_setf (&op->esil, "%"PFMT64d",%s,==,$z,zf,=,$s,nf,=,$b%d,cf,=,$o,vf,=", IMM64(1), REG64(0), 64);
+		if (ISIMM64(1)) {
+			r_strbuf_setf (&op->esil, "%"PFMT64d",%s,==,$z,zf,=,$s,nf,=,$b%d,cf,=,$o,vf,=", IMM64(1), REG64(0), 64);
+		} else {
+			// cmp w10, w11
+			r_strbuf_setf (&op->esil, "%s,%s,==,$z,zf,=,$s,nf,=,$b%d,cf,=,$o,vf,=", REG64(1), REG64(0), 64);
+		}
 		break;
 	case ARM64_INS_FCSEL:
 	case ARM64_INS_CSEL: // CSEL w8, w13, w14, eq
-		// TODO: w8 = eq? w13: w14
-		// COND64(4) { ARM64_CC_EQ, NE, HS, ...
-		r_strbuf_setf (&op->esil, "$z,?{,%s,}{,%s,},%s,=",
-			REG64(1), REG64(2), REG64(0));
+		r_strbuf_appendf(&op->esil, "%s,%s,=,BREAK", REG64(1), REG64(0));
+		r_strbuf_appendf(&op->esil, "%s,%s,%s,=", postfix, REG64(2), REG64(0));
+		break;
+	case ARM64_INS_CSET: // cset w8, eq
+		r_strbuf_appendf (&op->esil, "1,%s,=,BREAK", REG64(0));
+		r_strbuf_appendf (&op->esil, "%s,0,%s,=", postfix, REG64(0));
+		break;
+	case ARM64_INS_CINC: // cinc w10, w20, eq
+		r_strbuf_appendf (&op->esil, "1,%s,+,%s,=,BREAK", REG64(1), REG64(0));
+		r_strbuf_appendf (&op->esil, "%s,%s,%s,=", postfix, REG64(1), REG64(0));
 		break;
 	case ARM64_INS_STRB:
 		r_strbuf_setf (&op->esil, "%s,%s,%"PFMT64d",+,=[1]",
@@ -1183,15 +1197,23 @@ static int analop64_esil(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int l
 		}
 		break;
 	case ARM64_INS_MOVK: // movk w8, 0x1290
-		// XXX: wrongly implemented
-		r_strbuf_setf (&op->esil, "%d,%"PFMT64d",<<,%s,|=",
-			LSHIFT2_64(1),
-			IMM64 (1),
-			REG64 (0));
+	{
+		unsigned int shift = LSHIFT2_64(1);
+		ut64 shifted_imm = IMM64(1) << shift;
+		ut64 mask = ~(0xffffLL << shift);
+
+		r_strbuf_setf (&op->esil, "%"PFMT64d",%s,&,%"PFMT64d",|,%s,=",
+			mask,
+			REG64(0),
+			shifted_imm,
+			REG64(0));
+
 		break;
+	}
 	case ARM64_INS_MOVZ:
-		// XXX: wrongly implemented
-		r_strbuf_setf (&op->esil, "%d,%s,=", IMM64 (1), REG64 (0));
+		r_strbuf_setf (&op->esil, "%"PFMT64d",%s,=",
+			IMM64(1) << LSHIFT2_64(1),
+			REG64 (0));
 		break;
 	/* ASR, SXTB, SXTH and SXTW are alias for SBFM */
 	case ARM64_INS_ASR:
@@ -1234,6 +1256,26 @@ static int analop64_esil(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int l
 		break;
 	case ARM64_INS_RET:
 		r_strbuf_setf (&op->esil, "lr,pc,=");
+		break;
+	case ARM64_INS_BFI: // bfi w8, w8, 2, 1
+	case ARM64_INS_BFXIL:
+	{
+		ut64 mask = bitmask_by_width[IMM64 (3) - 1];
+		ut64 shift = IMM64 (2);
+		ut64 notmask = ~(mask << shift);
+		// notmask,dst,&,lsb,mask,src,&,<<,|,dst,=
+		r_strbuf_setf (&op->esil, "%"PFMT64u",%s,&,%"PFMT64u",%"PFMT64u",%s,&,<<,|,%s,=",
+			notmask, REG64 (0), shift, mask, REG64 (1), REG64 (0));
+		break;
+	}
+	case ARM64_INS_NEG:
+	case ARM64_INS_NEGS:
+		if (LSHIFT2_64 (1)) {
+			SHIFTED_REG64_APPEND (&op->esil, 1);
+		} else {
+			r_strbuf_appendf (&op->esil, "%s", REG64 (1));
+		}
+		r_strbuf_appendf (&op->esil, ",0,-,%s,=", REG64 (0));
 		break;
 	}
 	return 0;
@@ -2688,7 +2730,7 @@ static char *get_reg_profile(RAnal *anal) {
 		"gpr	x28	.64	224	0\n"
 		"gpr	x29	.64	232	0\n"
 		"gpr	x30	.64	240	0\n"
-		"gpr	tmp	.64	248	0\n"
+		"gpr	tmp	.64	288	0\n"
 		/* 64bit double */
 		"gpr	d0	.64	0	0\n" // x0
 		"gpr	d1	.64	8	0\n" // x0

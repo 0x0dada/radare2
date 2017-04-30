@@ -2,10 +2,26 @@
 
 #include <r_core.h>
 
-#define SETI(x,y,z) r_config_node_desc(r_config_set_i(cfg,x,y), z);
-#define SETICB(w,x,y,z) r_config_node_desc(r_config_set_i_cb(cfg,w,x,y), z);
-#define SETPREF(x,y,z) r_config_node_desc(r_config_set(cfg,x,y), z);
-#define SETCB(w,x,y,z) r_config_node_desc(r_config_set_cb(cfg,w,x,y), z);
+#define NODECB(w,x,y) r_config_set_cb(cfg,w,x,y)
+#define NODEICB(w,x,y) r_config_set_i_cb(cfg,w,x,y)
+#define SETDESC(x,y) r_config_node_desc(x,y)
+#define SETOPTIONS(x, ...) set_options(x, __VA_ARGS__)
+#define SETI(x,y,z) SETDESC(r_config_set_i(cfg,x,y), z);
+#define SETICB(w,x,y,z) SETDESC(NODEICB(w,x,y), z);
+#define SETPREF(x,y,z) SETDESC(r_config_set(cfg,x,y), z);
+#define SETCB(w,x,y,z) SETDESC(NODECB(w,x,y), z);
+
+static void set_options(RConfigNode *node, ...) {
+	va_list argp;
+	char *option = NULL;
+	va_start (argp, node);
+	option = va_arg (argp, char *);
+	while (option) {
+		r_list_append (node->options, strdup (option));
+		option = va_arg (argp, char *);
+	}
+	va_end (argp);
+}
 
 /* TODO: use loop here */
 /*------------------------------------------------------------------------------------------*/
@@ -658,6 +674,14 @@ static int cb_asmsyntax(void *user, void *data) {
 	return true;
 }
 
+static int cb_dirzigns(void *user, void *data) {
+	RCore *core = (RCore*) user;
+	RConfigNode *node = (RConfigNode*) data;
+	free (core->anal->zign_path);
+	core->anal->zign_path = strdup (node->value);
+	return true;
+}
+
 static int cb_bigendian(void *user, void *data) {
 	RCore *core = (RCore *) user;
 	RConfigNode *node = (RConfigNode *) data;
@@ -788,7 +812,11 @@ static int cb_dbg_btalgo(void *user, void *data) {
 	RCore *core = (RCore*) user;
 	RConfigNode *node = (RConfigNode*) data;
 	if (*node->value == '?') {
-		r_cons_printf ("default\nfuzzy\nanal\n");
+		RListIter *iter;
+		char *option;
+		r_list_foreach (node->options, iter, option) {
+			r_cons_printf ("%s\n", option);
+		}
 		return false;
 	}
 	free (core->dbg->btalgo);
@@ -1733,6 +1761,7 @@ static char *getViewerPath() {
 R_API int r_core_config_init(RCore *core) {
 	int i;
 	char buf[128], *p, *tmpdir;
+	RConfigNode *n;
 	RConfig *cfg = core->config = r_config_new (core);
 	if (!cfg) {
 		return 0;
@@ -1808,7 +1837,7 @@ R_API int r_core_config_init(RCore *core) {
 	SETCB("asm.invhex", "false", &cb_asm_invhex, "Show invalid instructions as hexadecimal numbers");
 	SETPREF("asm.bytes", "true", "Display the bytes of each instruction");
 	SETPREF("asm.flagsinbytes", "false",  "Display flags inside the bytes space");
-	SETICB("asm.midflags", 1, &cb_midflags, "Realign disassembly if there is a flag in the middle of an instruction");
+	SETICB("asm.midflags", 2, &cb_midflags, "Realign disassembly if there is a flag in the middle of an instruction");
 	SETPREF("asm.cmtflgrefs", "true", "Show comment flags associated to branch reference");
 	SETPREF("asm.cmtright", "true", "Show comments at right of disassembly if they fit in screen");
 	SETI("asm.cmtcol", 70, "Align comments at column 60");
@@ -1986,6 +2015,7 @@ R_API int r_core_config_init(RCore *core) {
 #else
 	SETPREF("dir.projects", "~/"R2_HOMEDIR"/projects", "Default path for projects");
 #endif
+	SETCB("dir.zigns", "~/"R2_HOMEDIR"/zigns", &cb_dirzigns, "Default path for zignatures (see zo command)");
 	SETPREF("stack.bytes", "true", "Show bytes instead of words in stack");
 	SETPREF("stack.anotated", "false", "Show anotated hexdump in visual debug");
 	SETI("stack.size", 64,  "Size in bytes of stack hexdump in visual debug");
@@ -1998,7 +2028,9 @@ R_API int r_core_config_init(RCore *core) {
 
 	SETPREF("dbg.bpinmaps", "true", "Force breakpoints to be inside a valid map");
 	SETCB("dbg.forks", "false", &cb_dbg_forks, "Stop execution if fork() is done (see dbg.threads)");
-	SETCB("dbg.btalgo", "fuzzy", &cb_dbg_btalgo, "Select backtrace algorithm");
+	n = NODECB("dbg.btalgo", "fuzzy", &cb_dbg_btalgo);
+	SETDESC(n, "Select backtrace algorithm");
+	SETOPTIONS(n, "default", "fuzzy", "anal", NULL);
 	SETCB("dbg.threads", "false", &cb_stopthreads, "Stop all threads when debugger breaks (see dbg.forks)");
 	SETCB("dbg.clone", "false", &cb_dbg_clone, "Stop execution if new thread is created");
 	SETCB("dbg.aftersyscall", "true", &cb_dbg_aftersc, "Stop execution before the syscall is executed (see dcs)");
