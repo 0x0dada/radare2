@@ -2,7 +2,7 @@
 
 #include <r_core.h>
 
-#define NPF 7
+#define NPF 8
 static int obs = 0;
 static int blocksize = 0;
 static int autoblocksize = 1;
@@ -10,17 +10,16 @@ static void visual_refresh(RCore *core);
 #define PIDX (R_ABS (core->printidx % NPF))
 #define KEY_ALTQ 0xc5
 
-
 static const char *printfmtSingle[] = {
 	"xc", "pd $r",
 	"pxw 64@r:SP;dr=;pd $r",
-	"pxw", "pxx", "pxA", "pxa"
+	"pxw", "pxx", "pxA", "pss", "pxa"
 };
 
 static const char *printfmtColumns[] = {
 	"pCx", "pCd $r-1",
 	"pCD",
-	"pCw", "pCc", "pCA", "pCa"
+	"pCw", "pCc", "pCA", "pss", "pCa"
 };
 
 static const char **printfmt = printfmtSingle;
@@ -2523,12 +2522,19 @@ R_API void r_core_visual_title(RCore *core, int color) {
 	if (color) {
 		r_cons_strcat (BEGIN);
 	}
-	strncpy (bar, printfmt[PIDX], sizeof (bar) - 1);
-
-	bar[sizeof (bar) - 1] = 0; // '\0'-terminate bar
-	bar[10] = '.'; // chop cmdfmt
-	bar[11] = '.'; // chop cmdfmt
-	bar[12] = 0; // chop cmdfmt
+	const char *cmd_visual = r_config_get (core->config, "cmd.visual");
+	if (cmd_visual && *cmd_visual) {
+		strncpy (bar, cmd_visual, sizeof (bar) - 1);
+		bar[10] = '.'; // chop cmdfmt
+		bar[11] = '.'; // chop cmdfmt
+		bar[12] = 0; // chop cmdfmt
+	} else {
+		strncpy (bar, printfmt[PIDX], sizeof (bar) - 1);
+		bar[sizeof (bar) - 1] = 0; // '\0'-terminate bar
+		bar[10] = '.'; // chop cmdfmt
+		bar[11] = '.'; // chop cmdfmt
+		bar[12] = 0; // chop cmdfmt
+	}
 	{
 		ut64 sz = r_io_size (core->io);
 		ut64 pa = r_io_section_vaddr_to_maddr_try (core->io, core->offset);

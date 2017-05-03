@@ -740,23 +740,44 @@ static int bin_info(RCore *r, int mode) {
 		pair_bool ("stripped", R_BIN_DBG_STRIPPED & info->dbg_info, mode, false);
 		pair_str ("subsys", info->subsystem, mode, false);
 		pair_bool ("va", info->has_va, mode, true);
-		for (i = 0; info->sum[i].type; i++) {
-			RBinHash *h = &info->sum[i];
-			ut64 hash = r_hash_name_to_bits (h->type);
-			RHash *rh = r_hash_new (true, hash);
-			int len = r_hash_calculate (rh, hash, (const ut8*)
-					binfile->buf->buf+h->from, h->to);
-			if (len < 1) {
-				eprintf ("Invaild wtf\n");
+		if (IS_MODE_JSON (mode)) {
+			r_cons_printf (",\"checksums\":{");
+			for (i = 0; info->sum[i].type; i++) {
+				RBinHash *h = &info->sum[i];
+				ut64 hash = r_hash_name_to_bits (h->type);
+				RHash *rh = r_hash_new (true, hash);
+				int len = r_hash_calculate (rh, hash, (const ut8*)
+						binfile->buf->buf+h->from, h->to);
+				if (len < 1) {
+					eprintf ("Invaild checksum length\n");
+				}
+				r_hash_free (rh);
+				r_cons_printf ("%s\"%s\":{\"hex\":\"", i?",": "", h->type);
+				// r_cons_printf ("%s\t%d-%dc\t", h->type, h->from, h->to+h->from);
+				for (j = 0; j < h->len; j++) {
+					r_cons_printf ("%02x", h->buf[j]);
+				}
+				r_cons_printf ("\"}");
 			}
-			r_hash_free (rh);
-			r_cons_printf ("%s\t%d-%dc\t", h->type, h->from, h->to+h->from);
-			for (j = 0; j < h->len; j++) {
-				r_cons_printf ("%02x", h->buf[j]);
+			r_cons_printf ("}");
+		} else {
+			for (i = 0; info->sum[i].type; i++) {
+				RBinHash *h = &info->sum[i];
+				ut64 hash = r_hash_name_to_bits (h->type);
+				RHash *rh = r_hash_new (true, hash);
+				int len = r_hash_calculate (rh, hash, (const ut8*)
+						binfile->buf->buf+h->from, h->to);
+				if (len < 1) {
+					eprintf ("Invaild wtf\n");
+				}
+				r_hash_free (rh);
+				r_cons_printf ("%s\t%d-%dc\t", h->type, h->from, h->to+h->from);
+				for (j = 0; j < h->len; j++) {
+					r_cons_printf ("%02x", h->buf[j]);
+				}
+				r_cons_newline ();
 			}
-			r_cons_newline ();
 		}
-
 		if (IS_MODE_JSON (mode)) r_cons_printf ("}");
 	}
 	r_core_anal_type_init (r);
@@ -2222,22 +2243,6 @@ static int bin_fields(RCore *r, int mode, int va) {
 	return true;
 }
 
-static bool flag_exists(RFlag *f, char* name) {
-	RListIter *iter;
-	RFlagItem *flag;
-	char *sym_name = NULL;
-	r_list_foreach (f->flags, iter, flag) {
-		sym_name = r_str_newf ("sym.%s", name);
-		if (!strncmp (flag->name, sym_name,
-			      R_MIN (strlen (flag->name), strlen (sym_name)))) {
-			free (sym_name);
-			return true;
-		}
-		free (sym_name);
-	}
-	return false;
-}
-
 static int bin_classes(RCore *r, int mode) {
 	RListIter *iter, *iter2;
 	RBinSymbol *sym;
@@ -2258,8 +2263,6 @@ static int bin_classes(RCore *r, int mode) {
 	} else if (IS_MODE_RAD (mode)) {
 		r_cons_println ("fs classes");
 	}
-
-	bool mergeflags = r_config_get_i (r->config, "bin.mergeflags");
 
 	r_list_foreach (cs, iter, c) {
 		if (!c || !c->name || !c->name[0]) {
@@ -2289,13 +2292,12 @@ static int bin_classes(RCore *r, int mode) {
 			const char *classname = sdb_fmt (0, "class.%s", name);
 			r_flag_set (r->flags, classname, c->addr, 1);
 			r_list_foreach (c->methods, iter2, sym) {
-				if (!mergeflags && !flag_exists (r->flags, sym->name)) {
-					char *mflags = r_core_bin_method_flags_str (sym, mode);
-					char *method = sdb_fmt (1, "method%s.%s.%s", mflags, c->name, sym->name);
-					R_FREE (mflags);
-					r_name_filter (method, -1);
-					r_flag_set (r->flags, method, sym->vaddr, 1);
-				}
+				char *mflags = r_core_bin_method_flags_str (sym, mode);
+				char *method = sdb_fmt (1, "method%s.%s.%s",
+					mflags, c->name, sym->name);
+				R_FREE (mflags);
+				r_name_filter (method, -1);
+				r_flag_set (r->flags, method, sym->vaddr, 1);
 			}
 		} else if (IS_MODE_SIMPLE (mode)) {
 			r_cons_printf ("0x%08"PFMT64x" [0x%08"PFMT64x" - 0x%08"PFMT64x"] %s%s%s\n",

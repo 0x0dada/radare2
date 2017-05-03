@@ -3644,6 +3644,7 @@ static int cmd_print(void *data, const char *input) {
 			const char *help_msg[] = {
 				"Usage:", "ps[zpw] [N]", "Print String",
 				"ps", "", "print string",
+				"pss", "", "print string in screen (wrap width)",
 				"psi", "", "print string inside curseek",
 				"psb", "", "print strings in current block",
 				"psx", "", "show string with escaped chars",
@@ -3816,6 +3817,21 @@ static int cmd_print(void *data, const char *input) {
 					(const char *) core->block, len);
 				r_cons_println (str);
 				free (str);
+			}
+			break;
+		case 's': // "pss"
+			if (l > 0) {
+				int h, w = r_cons_get_size (&h);
+				int colwidth = r_config_get_i (core->config, "hex.cols") * 2;
+				core->print->width = (colwidth == 32)?w: colwidth; // w;
+				int bs = core->blocksize;
+				if (len == bs) {
+					len = (h * w) / 3;
+					r_core_block_size (core, len);
+				}
+				r_print_string (core->print, core->offset, core->block,
+						len, R_PRINT_STRING_WRAP);
+				r_core_block_size (core, bs);
 			}
 			break;
 		default:
