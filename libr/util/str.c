@@ -322,7 +322,7 @@ R_API ut64 r_str_hash64(const char *s) {
 }
 
 // Compute a 32bit DJB hash of a string.
-R_API ut32 r_str_hash (const char *s) {
+R_API ut32 r_str_hash(const char *s) {
 	return (ut32) r_str_hash64 (s);
 }
 
@@ -388,7 +388,7 @@ R_API int r_str_word_set0(char *str) {
 			continue;
 		}
 		if (*p == ' ') {
-			char *q = p-1;
+			char *q = p - 1;
 			if (p > str && (*q == '\\' || !*q)) {
 				memmove (p, p + 1, strlen (p + 1) + 1);
 				if (*q == '\\') {
@@ -450,7 +450,7 @@ R_API int r_str_word_set0_stack(char *str) {
 			continue;
 		case ')':
 		case '}':
-	    case ']':
+		case ']':
 			pop = r_stack_pop (s);
 			if (pop) {
 				if ((*(char *)pop == '(' && *p == ')') ||
@@ -485,7 +485,9 @@ R_API char *r_str_word_get0set(char *stra, int stralen, int idx, const char *new
 	char *p = NULL;
 	char *out;
 	int alen, blen, nlen;
-	if (!stra && !newstr) return NULL;
+	if (!stra && !newstr) {
+		return NULL;
+	}
 	if (stra) {
 		p = (char *)r_str_word_get0 (stra, idx);
 	}
@@ -502,7 +504,7 @@ R_API char *r_str_word_get0set(char *stra, int stralen, int idx, const char *new
 		}
 		return out;
 	}
-	alen = (size_t)(p-stra);
+	alen = (size_t)(p - stra);
 	blen = stralen - ((alen + strlen (p)) + 1);
 	if (blen < 0) {
 		blen = 0;
@@ -1063,7 +1065,7 @@ R_API char* r_str_replace_thunked(char *str, char *clean, int *thunk, int clen,
 		str_p = str + thunk[i] + delta;
 
 		newo = thunk[i + klen] - thunk[i];
-		r_str_ansi_filter(str_p, NULL, NULL, newo);
+		r_str_ansi_filter (str_p, NULL, NULL, newo);
 		scnd = strdup (str_p + newo);
 		bias = vlen - newo;
 
@@ -2497,6 +2499,9 @@ static char **consts = NULL;
 
 R_API const char *r_str_const(const char *ptr) {
 	int ctr = 0;
+	if (!ptr) {
+		return NULL;
+	}
 	if (consts) {
 		const char *p;
 		while ((p = consts[ctr])) {

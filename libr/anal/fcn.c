@@ -1296,7 +1296,7 @@ R_API int r_anal_fcn_add(RAnal *a, ut64 addr, ut64 size, const char *name, int t
 		append = 1;
 	}
 	fcn->addr = addr;
-	fcn->cc = r_anal_cc_default (a);
+	fcn->cc = r_str_const (r_anal_cc_default (a));
 	fcn->bits = a->bits;
 	r_anal_fcn_set_size (fcn, size);
 	free (fcn->name);
@@ -1715,6 +1715,9 @@ R_API int r_anal_fcn_count(RAnal *anal, ut64 from, ut64 to) {
 /* return the basic block in fcn found at the given address.
  * NULL is returned if such basic block doesn't exist. */
 R_API RAnalBlock *r_anal_fcn_bbget(RAnalFunction *fcn, ut64 addr) {
+	if (!fcn || addr == UT64_MAX) {
+		return NULL;
+	}
 #if USE_SDB_CACHE
 	return sdb_ptr_get (HB, sdb_fmt (0, SDB_KEY_BB, fcn->addr, addr), NULL);
 #else
