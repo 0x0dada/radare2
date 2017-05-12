@@ -76,7 +76,7 @@ static int on_fcn_rename(void *_anal, void* _user, RAnalFunction *fcn, const cha
 	RCore *core = (RCore*)_user;
 	const char *cmd = r_config_get (core->config, "cmd.fcn.rename");
 	if (cmd && *cmd) {
-// XXX: wat do with old name here?
+		// XXX: wat do with old name here?
 		ut64 oaddr = core->offset;
 		ut64 addr = fcn->addr;
 		r_core_seek (core, addr, 1);
@@ -1520,6 +1520,14 @@ static int mywrite(const ut8 *buf, int len) {
 	return r_cons_memcat ((const char *)buf, len);
 }
 
+static bool r_core_anal_log(struct r_anal_t *anal, const char *msg) {
+	RCore *core = anal->user;
+	if (core->cfglog) {
+		r_core_log_add (core, msg);
+	}
+	return true;
+}
+
 R_API bool r_core_init(RCore *core) {
 	core->blocksize = R_CORE_BLOCKSIZE;
 	core->block = (ut8*)calloc (R_CORE_BLOCKSIZE + 1, 1);
@@ -1606,7 +1614,7 @@ R_API bool r_core_init(RCore *core) {
 	core->assembler->num = core->num;
 	r_asm_set_user_ptr (core->assembler, core);
 	core->anal = r_anal_new ();
-
+	core->anal->log = r_core_anal_log;
 	core->anal->meta_spaces.cb_printf = r_cons_printf;
 	core->anal->cb.on_fcn_new = on_fcn_new;
 	core->anal->cb.on_fcn_delete = on_fcn_delete;
@@ -1821,8 +1829,7 @@ static void chop_prompt (const char *filename, char *tmp, size_t max_tmp_size) {
 }
 
 static void set_prompt (RCore *r) {
-	size_t max_tmp_size = 128;
-	char tmp[max_tmp_size];
+	char tmp[128];
 	char *prompt = NULL;
 	char *filename = strdup ("");
 	const char *cmdprompt = r_config_get (r->config, "cmd.prompt");
@@ -1856,7 +1863,7 @@ static void set_prompt (RCore *r) {
 
 		a = ((r->offset >> 16) << 12);
 		b = (r->offset & 0xffff);
-		snprintf (tmp, max_tmp_size, "%04x:%04x", a, b);
+		snprintf (tmp, 128, "%04x:%04x", a, b);
 	} else {
 		char p[64], sec[32];
 		int promptset = false;
@@ -1875,7 +1882,7 @@ static void set_prompt (RCore *r) {
 		snprintf (tmp, sizeof (tmp), "%s%s", sec, p);
 	}
 
-	chop_prompt (filename, tmp, max_tmp_size);
+	chop_prompt (filename, tmp, 128);
 	prompt = r_str_newf ("%s%s[%s%s]>%s ", filename, BEGIN, remote,
 		tmp, END);
 	r_line_set_prompt (prompt ? prompt : "");

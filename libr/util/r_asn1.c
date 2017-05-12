@@ -320,7 +320,7 @@ static RASN1Object *asn1_parse_header (const ut8 *buffer, ut32 length) {
 	if (length8 & ASN1_LENLONG) {
 		length64 = 0;
 		length8 &= ASN1_LENSHORT;
-		if (length8) {
+		if (length8 && length8 < length - 2) {
 			ut8 i8;
 			// can overflow.
 			for (i8 = 0; i8 < length8; ++i8) {
@@ -328,9 +328,7 @@ static RASN1Object *asn1_parse_header (const ut8 *buffer, ut32 length) {
 				length64 <<= 8;
 				length64 |= byte;
 				if (length64 > length) {
-					free (object);
-					// Malformed object - overflow
-					return NULL;
+					goto out_error;
 				}
 			}
 			object->sector = buffer + 2 + length8;
@@ -345,9 +343,7 @@ static RASN1Object *asn1_parse_header (const ut8 *buffer, ut32 length) {
 				from++;
 			} while (from < end && length64 <= length && byte & 0x80);
 			if (length64 > length) {
-				free (object);
-				// Malformed object - overflow
-				return NULL;
+				goto out_error;
 			}
 			object->sector = from;
 		}
@@ -364,10 +360,12 @@ static RASN1Object *asn1_parse_header (const ut8 *buffer, ut32 length) {
 	}
 	if (object->length > length) {
 		// Malformed object - overflow from data ptr
-		free(object);
-		return NULL;
+		goto out_error;
 	}
 	return object;
+out_error:
+	free (object);
+	return NULL;
 }
 
 ut32 r_asn1_count_objects (const ut8 *buffer, ut32 length) {
@@ -428,6 +426,27 @@ RASN1Object *r_asn1_create_object (const ut8 *buffer, ut32 length) {
 	return object;
 }
 
+RASN1Binary *r_asn1_create_binary (const ut8 *buffer, ut32 length) {
+	RASN1Binary* bin = NULL;
+	ut8* buf = NULL;
+	if (!buffer || !length) {
+		return NULL;
+	}
+	buf = (ut8*) calloc (sizeof (*buf), length);
+	if (!buf) {
+		return NULL;
+	}
+	bin = R_NEW0 (RASN1Binary);
+	if (!bin) {
+		free (buf);
+		return NULL;
+	}
+	memcpy (buf, buffer, length);
+	bin->binary = buf;
+	bin->length = length;
+	return bin;
+}
+
 void r_asn1_free_object (RASN1Object *object) {
 	ut32 i;
 	if (!object) {
@@ -452,6 +471,13 @@ void r_asn1_free_string (RASN1String* str) {
 			free ((char*) str->string);
 		}
 		free (str);
+	}
+}
+
+void r_asn1_free_binary (RASN1Binary* bin) {
+	if (bin) {
+		free ((char*) bin->binary);
+		free (bin);
 	}
 }
 

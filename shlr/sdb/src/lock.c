@@ -5,6 +5,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "sdb.h"
+#ifdef _MSC_VER
+#include <process.h>
+#include <windows.h>
+#endif
 
 SDB_API const char *sdb_lock_file(const char *f) {
 	static char buf[128];
@@ -50,7 +54,7 @@ SDB_API int sdb_lock_wait(const char *s) {
 	// wait forever here?
  	while (!sdb_lock (s)) {
 		// TODO: if waiting too much return 0
-#if __SDB_WINDOWS__
+#if __SDB_WINDOWS__ || _MSC_VER
 	 	Sleep (500); // hack
 #else
 	// TODO use lockf() here .. flock is not much useful (fd, LOCK_EX);

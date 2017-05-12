@@ -29,7 +29,15 @@
 #include "sysdep.h"
 #include "opcode/sparc.h"
 #include "dis-asm.h"
+#ifndef _MSC_VER
 #include "libiberty.h"
+#else
+#include <stdlib.h>
+#define XNEWVEC(T, N)		((T *) malloc (sizeof (T) * (N)))
+#define XCNEWVEC(T, N)		((T *) calloc ((N), sizeof (T)))
+#define XNEW(T)			((T *) malloc (sizeof (T)))
+#define xmalloc malloc
+#endif
 #include "opintl.h"
 
 /* Bitmask of v9 architectures.  */
@@ -1022,3 +1030,7 @@ print_insn_sparc (bfd_vma memaddr, disassemble_info *info)
   (*info->fprintf_func) (stream, _("unknown"));
   return sizeof (buffer);
 }
+
+#ifdef _MSC_VER
+#undef xmalloc
+#endif

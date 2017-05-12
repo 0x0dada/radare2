@@ -783,6 +783,13 @@ static int cb_timezone(void *user, void *data) {
 	return true;
 }
 
+static int cb_cfglog(void *user, void *data) {
+	RCore *core = (RCore *) user;
+	RConfigNode *node = (RConfigNode *) data;
+	core->cfglog = node->i_value;
+	return true;
+}
+
 static int cb_cfgdebug(void *user, void *data) {
 	RCore *core = (RCore*) user;
 	RConfigNode *node = (RConfigNode*) data;
@@ -830,6 +837,14 @@ static int cb_cfgsanbox(void *user, void *data) {
 		eprintf ("Cannot disable sandbox\n");
 	}
 	return (!node->i_value && ret)? 0: 1;
+}
+
+static int cb_cmdlog(void *user, void *data) {
+	RCore *core = (RCore *) user;
+	RConfigNode *node = (RConfigNode *) data;
+	R_FREE (core->cmdlog);
+	core->cmdlog = strdup (node->value);
+	return true;
 }
 
 static int cb_cmdrepeat(void *user, void *data) {
@@ -1846,7 +1861,7 @@ R_API int r_core_config_init(RCore *core) {
 	SETCB ("anal.limits", "false", (RConfigCallback)&cb_anal_limits, "Restrict analysis to address range [anal.from:anal.to]");
 	SETICB ("anal.from", -1, (RConfigCallback)&cb_anal_from, "Lower limit on the address range for analysis");
 	SETICB ("anal.to", -1, (RConfigCallback)&cb_anal_from, "Upper limit on the address range for analysis");
-	SETI ("anal.timeout", 0, "Upper limit on the address range for analysis");
+	SETI ("anal.timeout", 0, "Stop analyzing after a couple of seconds");
 
 	SETCB ("anal.eobjmp", "false", &cb_analeobjmp, "jmp is end of block mode (option)");
 	SETCB ("anal.afterjmp", "true", &cb_analafterjmp, "Continue analysis after jmp/ujmp");
@@ -1909,11 +1924,12 @@ R_API int r_core_config_init(RCore *core) {
 	SETPREF ("asm.flagsinbytes", "false",  "Display flags inside the bytes space");
 	n = NODEICB ("asm.midflags", 2, &cb_midflags);
 	SETDESC (n, "Realign disassembly if there is a flag in the middle of an instruction");
+	SETPREF ("asm.midcursor", "false", "Cursor in visual disasm mode breaks the instruction");
 	SETOPTIONS (n, "0 = do not show flag", "1 = show without realign", "2 = realign at middle flag",
 		"3 = realign at middle flag if sym.*", NULL);
 	SETPREF ("asm.cmtflgrefs", "true", "Show comment flags associated to branch reference");
 	SETPREF ("asm.cmtright", "true", "Show comments at right of disassembly if they fit in screen");
-	SETI ("asm.cmtcol", 70, "Align comments at column 60");
+	SETI ("asm.cmtcol", 71, "Column to align comments");
 	SETICB ("asm.pcalign", 0, &cb_asm_pcalign, "Only recognize as valid instructions aligned to this value");
 	SETPREF ("asm.calls", "true", "Show callee function related info as comments in disasm");
 	SETPREF ("asm.bbline", "false", "Show empty line after every basic block");
@@ -2010,6 +2026,7 @@ R_API int r_core_config_init(RCore *core) {
 	SETPREF ("asm.marks", "true", "Show marks before the disassembly");
 	SETPREF ("asm.cmtrefs", "false", "Show flag and comments from refs in disasm");
 	SETPREF ("asm.cmtpatch", "false", "Show patch comments in disasm");
+	SETPREF ("asm.payloads", "false", "Show payload bytes in disasm");
 	SETCB ("bin.strpurge", "false", &cb_strpurge, "Try to purge false positive strings");
 	SETPREF ("bin.libs", "false", "Try to load libraries after loading main binary");
 	n = NODECB ("bin.strfilter", "", &cb_strfilter);
@@ -2046,6 +2063,7 @@ R_API int r_core_config_init(RCore *core) {
 	SETPREF ("cfg.plugins", "true", "Load plugins at startup");
 	SETCB ("time.fmt", "%Y-%m-%d %H:%M:%S %z", &cb_cfgdatefmt, "Date format (%Y-%m-%d %H:%M:%S %z)");
 	SETICB ("time.zone", 0, &cb_timezone, "Time zone, in hours relative to GMT: +2, -1,..");
+	SETCB ("cfg.log", "false", &cb_cfglog, "Log changes using the T api needed for realtime syncing");
 	SETCB ("cfg.debug", "false", &cb_cfgdebug, "Debugger mode");
 	p = r_sys_getenv ("EDITOR");
 #if __WINDOWS__ && !__CYGWIN__
@@ -2189,6 +2207,7 @@ R_API int r_core_config_init(RCore *core) {
 	SETPREF ("cmd.gprompt", "", "Graph visual prompt commands");
 	SETPREF ("cmd.hit", "", "Run when a search hit is found");
 	SETPREF ("cmd.open", "", "Run when file is opened");
+	SETCB ("cmd.log", "", &cb_cmdlog, "Every time a new T log is added run this command");
 	SETPREF ("cmd.prompt", "", "Prompt commands");
 	SETCB ("cmd.repeat", "false", &cb_cmdrepeat, "Empty command an alias for '..' (repeat last command)");
 	SETPREF ("cmd.fcn.new", "", "Run when new function is analyzed");

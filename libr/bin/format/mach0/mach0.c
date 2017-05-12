@@ -541,10 +541,10 @@ static bool parse_signature(struct MACH0_(obj_t) *bin, ut64 off) {
 	int i,len;
 	ut32 data;
 	bin->signature = NULL;
-	struct linkedit_data_command link = {};
+	struct linkedit_data_command link = {0};
 	ut8 lit[sizeof (struct linkedit_data_command)] = {0};
-	struct blob_index_t idx = {};
-	struct super_blob_t super = {};
+	struct blob_index_t idx = {0};
+	struct super_blob_t super = {{0}};
 
 	if (off > bin->size || off + sizeof (struct linkedit_data_command) > bin->size) {
 		return false;
@@ -585,7 +585,7 @@ static bool parse_signature(struct MACH0_(obj_t) *bin, ut64 off) {
 				bin->signature = (ut8 *)strdup ("Malformed entitlement");
 				break;
 			}
-			struct blob_t entitlements = {}; 
+			struct blob_t entitlements = {0}; 
 			entitlements.magic = r_read_ble32 (bin->b->buf + off, little_);
 			entitlements.length = r_read_ble32 (bin->b->buf + off + 4, little_);
 			len = entitlements.length - sizeof(struct blob_t);
@@ -1714,7 +1714,6 @@ struct import_t* MACH0_(get_imports)(struct MACH0_(obj_t)* bin) {
 	return imports;
 }
 
-
 struct reloc_t* MACH0_(get_relocs)(struct MACH0_(obj_t)* bin) {
 	struct reloc_t *relocs;
 	int i = 0, len;
@@ -1924,7 +1923,6 @@ relocs[i++].last = 0;\
 	}
 beach:
 	relocs[i].last = 1;
-
 	return relocs;
 }
 
@@ -1938,7 +1936,6 @@ struct addr_t* MACH0_(get_entrypoint)(struct MACH0_(obj_t)* bin) {
 	if (!(entry = calloc (1, sizeof (struct addr_t)))) {
 		return NULL;
 	}
-
 	if (bin->entry) {
 		entry->addr = entry_to_vaddr (bin);
 		entry->offset = addr_to_offset (bin, entry->addr);
@@ -2303,9 +2300,14 @@ ut64 MACH0_(get_main)(struct MACH0_(obj_t)* bin) {
 		return 0;
 	}
 	for (i = 0; !symbols[i].last; i++) {
-		if (!strcmp (symbols[i].name, "_main")) {
+		const char *name = symbols[i].name;
+		if (strstr (name, "4main") && !strstr (name, "STATIC")) {
 			addr = symbols[i].addr;
 			break;
+		}
+		if (!strcmp (symbols[i].name, "_main")) {
+			addr = symbols[i].addr;
+	//		break;
 		}
 	}
 	free (symbols);

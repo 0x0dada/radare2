@@ -6,9 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 #undef eprintf
-#define eprintf(x,y...) fprintf(stderr,x,##y)
+#define eprintf(...) fprintf(stderr,__VA_ARGS__)
 
 #ifndef SDB_API
 #if defined(__GNUC__) && __GNUC__ >= 4
@@ -30,7 +31,7 @@
 #define __MINGW__ 1
 #endif
 
-#if __WIN32__ || __MINGW__ || __WINDOWS__
+#if __WIN32__ || __MINGW__ || __WINDOWS__ || _MSC_VER
 #define __SDB_WINDOWS__ 1
 #include <windows.h>
 #define DIRSEP '\\'
@@ -42,7 +43,7 @@
 
 #include <inttypes.h>
 #define ULLFMT "ll"
-#if __SDB_WINDOWS__ && !__CYGWIN__
+#if defined(_MSC_VER) || (__SDB_WINDOWS__ && !__CYGWIN__)
 #define HAVE_MMAN 0
 #else
 #define HAVE_MMAN 1
@@ -53,7 +54,6 @@
 #endif
 
 #include <unistd.h>
-
 #ifndef UNUSED
 #  define UNUSED
 #  ifdef __GNUC__
@@ -97,7 +97,11 @@
 #include "config.h"
 
 static inline int seek_set(int fd, off_t pos) {
+#ifdef _MSC_VER
+	return ((fd == -1) || (_lseek (fd, pos, SEEK_SET) == -1))? 0:1;
+#else
 	return ((fd == -1) || (lseek (fd, (off_t) pos, SEEK_SET) == -1))? 0:1;
+#endif
 }
 
 static inline void ut32_pack(char s[4], ut32 u) {

@@ -34,15 +34,22 @@
 #if !USE_LIB_MAGIC
 
 #include <r_util.h>
-#include <sys/param.h>
 #include <ctype.h>
+#ifndef _MSC_VER
+#include <sys/param.h>
+#endif
 #if __UNIX__
 #define QUICK 1
 #include <sys/mman.h>
 #endif
 #include "file.h"
 #include "patchlevel.h"
-
+#ifdef _MSC_VER
+#include <sys\stat.h>
+#define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+#define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+#define MAXPATHLEN 255
+#endif
 #define	EATAB {while (isascii((ut8) *l) && isspace((ut8) *l))  ++l;}
 #define LOWCASE(l) (isupper((ut8) (l)) ? tolower((ut8) (l)) : (l))
 
@@ -1764,7 +1771,7 @@ static int apprentice_compile(RMagic *ms, struct r_magic **magicp, ut32 *nmagicp
 		goto out;
 	}
 
-	if (write(fd, ar, sizeof (ar)) != (ssize_t)sizeof (ar)) {
+	if (write(fd, ar, sizeof (ar)) != (int)sizeof (ar)) {
 		file_error(ms, errno, "error writing `%s'", dbname);
 		goto beach;
 	}
@@ -1776,7 +1783,7 @@ static int apprentice_compile(RMagic *ms, struct r_magic **magicp, ut32 *nmagicp
 	}
 
 	if (write(fd, *magicp, (sizeof (struct r_magic) * *nmagicp))
-	    != (ssize_t)(sizeof (struct r_magic) * *nmagicp)) {
+	    != (int)(sizeof (struct r_magic) * *nmagicp)) {
 		file_error(ms, errno, "error writing `%s'", dbname);
 		goto beach;
 	}

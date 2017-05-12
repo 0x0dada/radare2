@@ -2,6 +2,10 @@
 
 #include <r_util.h>
 #include <signal.h>
+#if _MSC_VER
+#include <process.h> // to compile execl under msvc windows
+#include <direct.h>  // to compile chdir under msvc windows
+#endif
 
 static bool enabled = false;
 static bool disabled = false;
@@ -306,7 +310,6 @@ R_API DIR* r_sandbox_opendir (const char *path) {
 			return NULL;
 		}
 	}
-
 	return opendir (path);
 }
 #endif
