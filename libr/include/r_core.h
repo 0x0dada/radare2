@@ -6,7 +6,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
+#include "r_socket.h"
 #include "r_types.h"
 #include "r_magic.h"
 #include "r_io.h"
@@ -28,7 +28,6 @@ extern "C" {
 #include "r_config.h"
 #include "r_bin.h"
 #include "r_hash.h"
-#include "r_socket.h"
 #include "r_util.h"
 #include "r_crypto.h"
 #include "r_bind.h"
@@ -469,7 +468,8 @@ R_API void fcn_callconv (RCore *core, RAnalFunction *fcn);
 #define R_CORE_BIN_ACC_SIGNATURE 0x20000
 #define R_CORE_BIN_ACC_RAW_STRINGS	0x40000
 #define R_CORE_BIN_ACC_HEADER 0x80000
-#define R_CORE_BIN_ACC_ALL	0x4FFF
+#define R_CORE_BIN_ACC_RESOURCES 0x100000
+#define R_CORE_BIN_ACC_ALL	0x104FFF
 
 #define R_CORE_PRJ_FLAGS	0x0001
 #define R_CORE_PRJ_EVAL		0x0002

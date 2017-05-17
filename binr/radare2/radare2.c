@@ -2,7 +2,11 @@
 
 #define USE_THREADS 1
 #define UNCOLORIZE_NONTTY 0
-
+#ifdef _MSC_VER
+#ifndef WIN32_LEAN_AND_MEAN 
+#define WIN32_LEAN_AND_MEAN
+#endif
+#endif
 #include <sdb.h>
 #include <r_core.h>
 #include <r_io.h>
@@ -135,8 +139,8 @@ static int main_help(int line) {
 	}
 	if (line != 1) {
 		printf (
-		" --           open radare2 on an empty file\n"
-		" -            equivalent of 'r2 malloc://512'\n"
+		" --           run radare2 without opening any file\n"
+		" -            same as 'r2 malloc://512'\n"
 		" =            read file from stdin (use -i and -c to run cmds)\n"
 		" -=           perform !=! command to run all commands remotely\n"
 		" -0           print \\x00 after init and every command\n"

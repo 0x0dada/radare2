@@ -86,6 +86,7 @@
   #define _X86_
   #define strcasecmp stricmp
   #define strncasecmp strnicmp
+  #define __WINDOWS__ 1
 #endif
 
 #if defined(EMSCRIPTEN) || defined(__linux__) || defined(__APPLE__) || defined(__GNU__) || defined(__ANDROID__) || defined(__QNX__) || defined(__sun)
@@ -169,11 +170,6 @@
 extern "C" {
 #endif
 
-#define R_LIB_VERSION_HEADER(x) \
-const char *x##_version()
-#define R_LIB_VERSION(x) \
-const char *x##_version () { return "" R2_GITTAP; }
-
 #define TODO(x) eprintf(__func__"  " x)
 
 // TODO: FS or R_SYS_DIR ??
@@ -242,6 +238,11 @@ typedef void (*PrintfCallback)(const char *str, ...);
     #define R_API
   #endif
 #endif
+
+#define R_LIB_VERSION_HEADER(x) \
+R_API const char *x##_version()
+#define R_LIB_VERSION(x) \
+R_API const char *x##_version () { return "" R2_GITTAP; }
 
 #define BITS2BYTES(x) (((x)/8)+(((x)%8)?1:0))
 #define ZERO_FILL(x) memset (&x, 0, sizeof (x))
@@ -414,8 +415,20 @@ static inline void *r_new_copy(int size, void *data) {
 #define R_SYS_ARCH "x86"
 #define R_SYS_BITS R_SYS_BITS_32
 #else
+#ifdef _MSC_VER
+#ifdef _WIN64
+#define R_SYS_ARCH "x86"
+#define R_SYS_BITS (R_SYS_BITS_32 | R_SYS_BITS_64)
+#define __x86_64__
+#else
+#define R_SYS_ARCH "x86"
+#define R_SYS_BITS (R_SYS_BITS_32)
+#define __i386__ 1
+#endif
+#else
 #define R_SYS_ARCH "unknown"
 #define R_SYS_BITS R_SYS_BITS_32
+#endif
 #endif
 
 #define R_SYS_ENDIAN_NONE 0

@@ -30,9 +30,15 @@ else
 	shift
 fi
 
-NOSUDO=""
-type sudo > /dev/null 2>&1 || NOSUDO=1
-SUDO=sudo
+export NOSUDO
+if [ -n "${NOSUDO}" ]; then
+	SUDO=""
+else
+	type sudo > /dev/null 2>&1 || NOSUDO=1
+	SUDO=sudo
+	[ -n "${NOSUDO}" ] && SUDO=
+fi
+
 if [ "$(id -u)" = 0 ]; then
 	SUDO=""
 else

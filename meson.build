@@ -15,6 +15,15 @@ else
   host_os = 'darwin'
 endif
 
+if host_machine.system() == 'windows'
+  platform_deps = [cc.find_library('ws2_32')] # ,cc.find_library('capstone',dirs :'d:/2017/radare/myradare2/shlr/capstone/msvc/Release')]
+  platform_librinc  = ['../include/msvc']
+  platform_binrinc  = ['../../libr/include/msvc']
+  host_os = 'windows'
+else
+  platform_librinc = []
+  platform_binrinc = []
+endif
 subdir('libr/util')
 subdir('binr/rax2')
 

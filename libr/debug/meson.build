@@ -24,7 +24,6 @@ files=[
 #'p/native/drx.c',
 #'p/native/maps/darwin.c',
 #'p/native/maps/windows.c',
-'p/native/procfs.c',
 #'p/native/reg.c',
 #'p/native/w32.c',
 #'p/native/windows/windows_debug.c',
@@ -42,6 +41,11 @@ if host_os == 'linux'
     'p/native/linux/linux_coredump.c'
   ]
 endif
+if host_os != 'windows'
+ files += [
+  'p/native/procfs.c'
+ ]
+endif
 
 if host_os == 'darwin'
   files += [
@@ -54,8 +58,15 @@ if host_os == 'darwin'
 endif
 
 r_debug = shared_library('r_debug', files,
-  include_directories: include_directories(['../include', '../bin/format/elf']),
+  include_directories: include_directories([
+  '../include', 
+  '../bin/format/elf',
+  platform_librinc
+  ]),
   c_args: ['-DCORELIB'],
   link_with: [r_util, r_hash, r_reg, r_syscall, r_anal, r_flag, r_io, r_bp, r_search, r_cons, r_lang],
+  objects: [
+    r_sdb.extract_all_objects(),
+  ],
   install: true
 )

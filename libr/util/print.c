@@ -16,6 +16,26 @@ static void libc_printf(const char *format, ...) {
 }
 static bool isInterrupted = false;
 
+R_API void r_print_columns (RPrint *p, const ut8 *buf, int len, int height) {
+	int i, j, cols = 78;
+	int rows = height > 0 ? height : 10;
+	// int realrows = rows * 2;
+	p->cb_printf (" | ");
+	for (i = 0; i<rows; i++) {
+		int threshold = i * (0xff / rows);
+		for (j = 0; j < cols; j++) {
+			int realJ = j * (len/cols);
+			if (buf[realJ] < threshold) {
+				p->cb_printf ("#");
+			} else {
+				p->cb_printf (" ");
+			}
+		}
+		p->cb_printf ("\n | ");
+	}
+	p->cb_printf ("\n");
+}
+
 R_API int r_util_lines_getline(ut64 *lines_cache, int lines_cache_sz, ut64 off) {
 	int imax = lines_cache_sz;
 	int imin = 0;
@@ -1869,3 +1889,37 @@ R_API int r_print_row_at_off(RPrint *p, ut32 offset) {
 R_API int r_print_get_cursor(RPrint *p) {
 	return p->cur_enabled? p->cur: 0;
 }
+
+R_API int r_print_jsondump(RPrint *p, const ut8 *buf, int len, int wordsize) {
+	ut16 *buf16 = (ut16*) buf;
+	ut32 *buf32 = (ut32*) buf;
+	ut64 *buf64 = (ut64*) buf;
+	// TODDO: support p==NULL too
+	if (!p || !buf || len < 1 || wordsize < 1) {
+		return 0;
+	}
+	int i, words = (len / wordsize);
+	p->cb_printf ("[");
+	for (i = 0; i < words; i++) {
+		ut16 w16 = r_read_ble16 (&buf16[i], p->big_endian);
+		ut32 w32 = r_read_ble32 (&buf32[i], p->big_endian);
+		ut64 w64 = r_read_ble64 (&buf64[i], p->big_endian);
+		switch (wordsize) {
+		case 8:
+			p->cb_printf ("%s%d", i?",":"", buf[i]);
+			break;
+		case 16:
+			p->cb_printf ("%s%hd", i?",":"", w16);
+			break;
+		case 32:
+			p->cb_printf ("%s%d", i?",":"", w32);
+			break;
+		case 64:
+			p->cb_printf ("%s%"PFMT64d, i?",":"", w64);
+			break;
+		}
+	}
+	p->cb_printf ("]\n");
+	return words;
+}
+

@@ -1238,7 +1238,8 @@ R_API void r_core_print_examine(RCore *core, const char *str) {
 	case 'g': size = 8; break;
 	}
 	if ((p = strchr (str, ' '))) {
-		addr = r_num_math (core->num, p + 1);
+		*p++ = 0;
+		addr = r_num_math (core->num, p);
 	}
 	switch (*str) {
 	case '?':
@@ -1251,10 +1252,10 @@ R_API void r_core_print_examine(RCore *core, const char *str) {
 			"Size letters are b(byte), h(halfword), w(word), g(giant, 8 bytes).\n"
 			);
 		break;
-	case 's':
+	case 's': // "x/s"
 		r_core_cmdf (core, "psb %d @ 0x%"PFMT64x, count * size, addr);
 		break;
-	case 'o':
+	case 'o': // "x/o"
 		r_core_cmdf (core, "pxo %d @ 0x%"PFMT64x, count * size, addr);
 		break;
 	case 'f':
@@ -2198,6 +2199,7 @@ static void cmd_print_bars(RCore *core, const char *input) {
 		const char *help_msg[] = {
 			"Usage:", "p=[bep?][qj] [nblocks] ([len]) ([offset]) ", "show entropy/printable chars/chars bars",
 			"p=", "", "print bytes of current block in bars",
+			"p==", "[..]", "same subcommands as p=, but using flame column graph instead of rows",
 			"p=", "b", "same as above",
 			"p=", "c", "print number of calls per block",
 			"p=", "d", "print different bytes from block",
@@ -2214,6 +2216,97 @@ static void cmd_print_bars(RCore *core, const char *input) {
 		};
 		r_core_cmd_help (core, help_msg);
 		  }
+		break;
+	case '=': // "p=="
+		switch (submode) {
+	case '0': // 0x00 bytes
+	case 'F': // 0xff bytes
+	case 'p': // printable chars
+	case 'z': // zero terminated strings
+	{
+		ut8 *p;
+		int i, j, k;
+		ptr = calloc (1, nblocks);
+		if (!ptr) {
+			eprintf ("Error: failed to malloc memory");
+			goto beach;
+		}
+		p = calloc (1, blocksize);
+		if (!p) {
+			R_FREE (ptr);
+			eprintf ("Error: failed to malloc memory");
+			goto beach;
+		}
+		int len = 0;
+		for (i = 0; i < nblocks; i++) {
+			ut64 off = (i + skipblocks) * blocksize;
+			r_core_read_at (core, off, p, blocksize);
+			for (j = k = 0; j < blocksize; j++) {
+				switch (submode) {
+				case '0':
+					if (!p[j]) {
+						k++;
+					}
+					break;
+				case 'f':
+					if (p[j] == 0xff) {
+						k++;
+					}
+					break;
+				case 'z':
+					if ((IS_PRINTABLE (p[j]))) {
+						if (p[j + 1] == 0) {
+							k++;
+							j++;
+						}
+						if (len++ > 8) {
+							k++;
+						}
+					} else {
+						len = 0;
+					}
+					break;
+				case 'p':
+					if ((IS_PRINTABLE (p[j]))) {
+						k++;
+					}
+					break;
+				}
+			}
+			ptr[i] = 256 * k / blocksize;
+		}
+		r_print_columns (core->print, ptr, nblocks, 14);
+		free (p);
+	}
+	break;
+		case 'e':
+	{
+		ut8 *p;
+		int i = 0;
+		ptr = calloc (1, nblocks);
+		if (!ptr) {
+			eprintf ("Error: failed to malloc memory");
+			goto beach;
+		}
+		p = malloc (blocksize);
+		if (!p) {
+			R_FREE (ptr);
+			eprintf ("Error: failed to malloc memory");
+			goto beach;
+		}
+		for (i = 0; i < nblocks; i++) {
+			ut64 off = core->offset + (i + skipblocks) * blocksize;
+			r_core_read_at (core, off, p, blocksize);
+			ptr[i] = (ut8) (256 * r_hash_entropy_fraction (p, blocksize));
+		}
+		free (p);
+			r_print_columns (core->print, ptr, nblocks, 14); //core->block, core->blocksize, 10);
+	}
+			break;
+		default:
+			r_print_columns (core->print, core->block, core->blocksize, 14);
+			break;
+		}
 		break;
 	case 'd': // "p=d"
 		if (input[1]) {
@@ -3224,7 +3317,7 @@ static int cmd_print(void *data, const char *input) {
 // r_cons_printf ("|Usage: pi[defj] [num]\n");
 		{
 			const char *help_msg[] = {
-				"Usage:", "pi[defrj] [num]", "",
+				"Usage:", "pi[bdefrj] [num]", "",
 				"pir", "", "like 'pdr' but with 'pI' output",
 				NULL
 			};
@@ -3275,6 +3368,17 @@ static int cmd_print(void *data, const char *input) {
 				R_ANAL_FCN_TYPE_FCN | R_ANAL_FCN_TYPE_SYM);
 			if (f) {
 				func_walk_blocks (core, f, input[1], 'I');
+			} else {
+				eprintf ("Cannot find function at 0x%08"PFMT64x "\n", core->offset);
+				core->num->value = 0;
+			}
+		}
+		break;
+		case 'b': //pib
+		{
+			RAnalBlock *b = r_anal_bb_from_offset (core->anal, core->offset);
+			if (b) {
+					r_core_print_disasm_instructions (core, b->size - (core->offset - b->addr), 0);
 			} else {
 				eprintf ("Cannot find function at 0x%08"PFMT64x "\n", core->offset);
 				core->num->value = 0;
@@ -3512,6 +3616,7 @@ static int cmd_print(void *data, const char *input) {
 					r_cons_printf ("]}\n");
 					pd_result = 0;
 				} else if (f) {
+#if 0
 					for (; locs_it && (tmp_func = locs_it->data); locs_it = locs_it->n) {
 						if (tmp_func->addr > f->addr) {
 							break;
@@ -3520,11 +3625,15 @@ static int cmd_print(void *data, const char *input) {
 						r_core_cmdf (core, "pD %d @ 0x%08" PFMT64x, cont_size, tmp_func->addr);
 					}
 					cont_size = tmp_get_contsize (f);
-					r_core_cmdf (core, "pD %d @ 0x%08" PFMT64x, cont_size, f->addr);
+#endif
+					r_core_cmdf (core, "pD %d @ 0x%08" PFMT64x,
+						f->_size > 0 ? f->_size: r_anal_fcn_realsize (f), f->addr);
+#if 0
 					for (; locs_it && (tmp_func = locs_it->data); locs_it = locs_it->n) {
 						cont_size = tmp_get_contsize (tmp_func);
 						r_core_cmdf (core, "pD %d @ 0x%08" PFMT64x, cont_size, tmp_func->addr);
 					}
+#endif
 					pd_result = 0;
 				} else {
 					eprintf ("pdf: Cannot find function at 0x%08"PFMT64x "\n", core->offset);
@@ -3789,10 +3898,14 @@ static int cmd_print(void *data, const char *input) {
 			break;
 		case 'b': // "psb"
 			if (l > 0) {
+				int quiet = input[2] == 'q'; // "psbq"
 				char *s = malloc (core->blocksize + 1);
 				int i, j, hasnl = 0;;
 				if (s) {
 					memset (s, 0, core->blocksize);
+					if (!quiet) {
+						r_print_offset (core->print, core->offset, 0, 0, 0, 0, NULL);
+					}
 					// TODO: filter more chars?
 					for (i = j = 0; i < core->blocksize; i++) {
 						char ch = (char) core->block[i];
@@ -3801,6 +3914,9 @@ static int cmd_print(void *data, const char *input) {
 								s[j] = 0;
 								if (*s) {
 									r_cons_println (s);
+									if (!quiet) {
+										r_print_offset (core->print, core->offset + i, 0, 0, 0, 0, NULL);
+									}
 								}
 								j = 0;
 								s[0] = 0;
@@ -4094,6 +4210,9 @@ static int cmd_print(void *data, const char *input) {
 	}
 		r_cons_break_push (NULL, NULL);
 		switch (input[1]) {
+		case 'j':
+			r_print_jsondump (core->print, core->block, core->blocksize, 8);
+			break;
 		case '/':
 			r_core_print_examine (core, input + 2);
 			break;
@@ -4281,7 +4400,11 @@ static int cmd_print(void *data, const char *input) {
 			break;
 		case 'w': // "pxw"
 			if (l != 0) {
-				r_print_hexdump (core->print, core->offset, core->block, len, 32, 4);
+				if (input[2] == 'j') {
+					r_print_jsondump (core->print, core->block, len, 32);
+				} else {
+					r_print_hexdump (core->print, core->offset, core->block, len, 32, 4);
+				}
 			}
 			break;
 		case 'W': // "pxW"
@@ -4376,10 +4499,14 @@ static int cmd_print(void *data, const char *input) {
 				}
 			}
 			break;
-		case 'h':
+		case 'h': // pxh
 			if (l) {
-				r_print_hexdump (core->print, core->offset,
-					core->block, len, 32, 2);
+				if (input[2] == 'j') {
+					r_print_jsondump (core->print, core->block, len, 16);
+				} else {
+					r_print_hexdump (core->print, core->offset,
+						core->block, len, 32, 2);
+				}
 			}
 			break;
 		case 'H':
@@ -4419,12 +4546,16 @@ static int cmd_print(void *data, const char *input) {
 				}
 			}
 			break;
-		case 'q':
+		case 'q': // "pxq"
 			if (l) {
-				r_print_hexdump (core->print, core->offset, core->block, len, 64, 8);
+				if (input[2] == 'j') {
+					r_print_jsondump (core->print, core->block, len, 64);
+				} else {
+					r_print_hexdump (core->print, core->offset, core->block, len, 64, 8);
+				}
 			}
 			break;
-		case 'Q':
+		case 'Q': // "pxQ"
 			// TODO. show if flag name, or inside function
 			if (l) {
 				len = len - (len % 8);
@@ -4462,7 +4593,7 @@ static int cmd_print(void *data, const char *input) {
 				}
 			}
 			break;
-		case 's':
+		case 's': // "pxs"
 			if (l) {
 				core->print->flags |= R_PRINT_FLAGS_SPARSE;
 				r_print_hexdump (core->print, core->offset, core->block, len, 16, 1);

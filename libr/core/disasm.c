@@ -1050,15 +1050,16 @@ static void ds_print_show_cursor(RDisasmState *ds) {
 	RCore *core = ds->core;
 	char res[] = "     ";
 	void *p;
-	int q, t;
 	if (!ds->show_marks) {
 		return;
 	}
-	q = core->print->cur_enabled &&
+	int q = core->print->cur_enabled &&
 		ds->cursor >= ds->index &&
 		ds->cursor < (ds->index + ds->asmop.size);
 	p = r_bp_get_at (core->dbg->bp, ds->at);
-	t = ds->midflags && handleMidFlags (core, ds, false) > 0;
+	if (ds->midflags) {
+		(void)handleMidFlags (core, ds, false);
+	}
 	if (p) {
 		res[0] = 'b';
 	}
@@ -1962,8 +1963,10 @@ static bool ds_print_data_type(RDisasmState *ds, const ut8 *buf, int ib, int siz
 				}
 			}
 		}
-		RFlagItem *fi = r_flag_get_i (core->flags, n);
-		if (fi) {
+		const RList *flags = r_flag_get_list (core->flags, n);
+		RListIter *iter;
+		RFlagItem *fi;
+		r_list_foreach (flags, iter, fi) {
 			r_cons_printf (" ; %s", fi->name);
 		}
 	}
@@ -2439,10 +2442,10 @@ static void ds_print_core_vmode(RDisasmState *ds) {
 				}
 				shortcut = r_core_add_asmqjmp (core, ds->analop.ptr);
 				if (shortcut) {
-					r_cons_printf (" ;[%s]", shortcut);
+					r_cons_printf (";[%s]", shortcut);
 					free (shortcut);
 				} else {
-					r_cons_strcat (" ;[?]");
+					r_cons_strcat (";[?]");
 				}
 				if (ds->show_color) r_cons_strcat (Color_RESET);
 			}
@@ -2457,13 +2460,13 @@ static void ds_print_core_vmode(RDisasmState *ds) {
 			shortcut = r_core_add_asmqjmp (core, ds->analop.ptr);
 			if (shortcut) {
 				if (core->is_asmqjmps_letter) {
-					r_cons_printf (" ;[g%s]", shortcut);
+					r_cons_printf (";[g%s]", shortcut);
 				} else {
-					r_cons_printf (" ;[%s]", shortcut);
+					r_cons_printf (";[%s]", shortcut);
 				}
 				free (shortcut);
 			} else {
-				r_cons_strcat (" ;[?]");
+				r_cons_strcat (";[?]");
 			}
 			if (ds->show_color) {
 				r_cons_strcat (Color_RESET);
@@ -2482,13 +2485,13 @@ static void ds_print_core_vmode(RDisasmState *ds) {
 			shortcut = r_core_add_asmqjmp (core, ds->analop.jump);
 			if (shortcut) {
 				if (core->is_asmqjmps_letter) {
-					r_cons_printf (" ;[g%s]", shortcut);
+					r_cons_printf (";[g%s]", shortcut);
 				} else {
-					r_cons_printf (" ;[%s]", shortcut);
+					r_cons_printf (";[%s]", shortcut);
 				}
 				free (shortcut);
 			} else {
-				r_cons_strcat (" ;[?]");
+				r_cons_strcat (";[?]");
 			}
 			if (ds->show_color) {
 				r_cons_strcat (Color_RESET);
@@ -2756,10 +2759,14 @@ static void ds_print_ptr(RDisasmState *ds, int len, int idx) {
 		f = r_flag_get_i (core->flags, refaddr);
 		if (f) {
 			if (strlen (msg) != 1) {
-				r_str_filter (msg, 0);
-			}
-			if (!strncmp (msg, "UH..", 4)) {
-				*msg = 0;
+				char *msg2 = r_str_new (msg);
+				if (msg2) {
+					r_str_filter (msg2, 0);
+					if (!strncmp (msg2, "UH..", 4)) {
+						*msg = 0;
+					}
+					free (msg2);
+				}
 			}
 			if (*msg) {
 				if (strlen (msg) == 1) {
@@ -2771,19 +2778,30 @@ static void ds_print_ptr(RDisasmState *ds, int len, int idx) {
 						if (!msg[i]) {
 							break;
 						}
-						if (IS_PRINTABLE (msg[i])) {
-							ds_comment (ds, false, "%c", msg[i]);
-						} else {
-							ds_comment (ds, false, "\\x%02x", msg[i]);
-						}
 						if (!msg[i+1]) {
-							i++;
+							if (IS_PRINTABLE (msg[i])
+							    && msg[i] != '"' && msg[i] != '\\') {
+								ds_comment (ds, false, "%c", msg[i]);
+							} else {
+								char *escchar = r_str_escape_all (&msg[i]);
+								if (escchar) {
+									ds_comment (ds, false, "%s", escchar);
+									free (escchar);
+								}
+							}
+						} else {
+							ds_comment (ds, false, "\\u%02x%02x", msg[i+1], msg[i]);
 						}
+						i++;
 					}
 					ds_comment (ds, false, "\"%s", nl);
 				} else {
-					ALIGN;
-					ds_comment (ds, true, "; \"%s\"%s", msg, nl);
+					char *escstr = r_str_escape_all (msg);
+					if (escstr) {
+						ALIGN;
+						ds_comment (ds, true, "; \"%s\"%s", escstr, nl);
+						free (escstr);
+					}
 				}
 			}
 		} else {
