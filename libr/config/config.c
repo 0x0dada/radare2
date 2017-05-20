@@ -385,6 +385,9 @@ R_API RConfigNode* r_config_set(RConfig *cfg, const char *name, const char *valu
 				node->value = strdup ("");
 				node->i_value = 0;
 			} else {
+				if (node->value == value) {
+					goto beach;
+				}
 				free (node->value);
 				node->value = strdup (value);
 				if (IS_DIGIT (*value)) {
@@ -570,7 +573,7 @@ R_API int r_config_eval(RConfig *cfg, const char *str) {
 		ptr[0] = '\0';
 		a = r_str_chop (name);
 		b = r_str_chop (ptr + 1);
-		r_config_set (cfg, a, b);
+		(void) r_config_set (cfg, a, b);
 	} else {
 		char *foo = r_str_chop (name);
 		if (foo[strlen (foo) - 1] == '.') {
