@@ -54,7 +54,6 @@ R_API int r_sys_get_src_dir_w32(char *buf) {
 R_API char *r_sys_cmd_str_w32(const char *cmd) {
 	char *ret = NULL;
 	HANDLE out = NULL;
-	HANDLE in = NULL;
 	SECURITY_ATTRIBUTES saAttr;
 	char *argv0 = getexe (cmd);
 
@@ -73,19 +72,6 @@ R_API char *r_sys_cmd_str_w32(const char *cmd) {
 		ErrorExit ("Stdout SetHandleInformation");
 
 	CreateChildProcess (cmd, out);
-
-	in = CreateFileA (argv0,
-			GENERIC_READ,
-			FILE_SHARE_READ,
-			NULL,
-			OPEN_EXISTING,
-			FILE_ATTRIBUTE_READONLY,
-			NULL);
-
-	if (in == INVALID_HANDLE_VALUE) {
-		eprintf ("CreateFile (%s)\n", argv0);
-		ErrorExit ("CreateFile");
-	}
 
 	// Close the write end of the pipe before reading from the
 	// read end of the pipe, to control child process execution.
@@ -142,15 +128,22 @@ char *ReadFromPipe(HANDLE fh) {
 	int strsz = BUFSIZE+1;
 
 	str = malloc (strsz);
+	if (!str) {
+		return NULL;
+	}
 	for (;;) {
 		bSuccess = ReadFile (fh, chBuf, BUFSIZE, &dwRead, NULL);
-		if (! bSuccess || dwRead == 0) break;
-		chBuf[dwRead] = '\0';
+		if (!bSuccess || dwRead == 0) {
+			break;
+		}
 		if (strl+dwRead>strsz) {
+			char *str_tmp = str;
 			strsz += 4096;
 			str = realloc (str, strsz);
-			if (!str)
+			if (!str) {
+				free (str_tmp);
 				return NULL;
+			}
 		}
 		memcpy (str+strl, chBuf, dwRead);
 		strl += dwRead;

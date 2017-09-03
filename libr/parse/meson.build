@@ -11,26 +11,17 @@ files=[
 'p/parse_ppc_pseudo.c',
 'p/parse_x86_pseudo.c',
 'p/parse_z80_pseudo.c',
+'p/parse_sh_pseudo.c',
+'p/parse_avr_pseudo.c',
 'p/parse_mreplace/mreplace.c',
 'p/parse_mreplace/mmemory.c'
 ]
 
-tcc = static_library('tcc', [
-'../../shlr/tcc/libtcc.c',
-'../../shlr/tcc/tccgen.c',
-'../../shlr/tcc/tccpp.c'
-],
-include_directories: include_directories(['../include', '../../shlr/tcc']),
-)
-
-r_parse = shared_library('r_parse', files,
-  include_directories: include_directories([
-  '../include',
-  '../../shlr/tcc',
-  platform_librinc
-  ]),
-  c_args: ['-DCORELIB'],
-  link_with: [r_util, r_flag, r_syscall, r_reg, tcc],
+r_parse = library('r_parse', files,
+  include_directories: [platform_inc, include_directories([
+	'../../shlr/tcc',
+  ])],
+  c_args : ['-DCORELIB=1', '-I' + meson.current_build_dir() + '/../..'],
+  link_with: [r_util, r_flag, r_syscall, r_reg, libr2tcc, libr2sdb],
   install: true
 )
-

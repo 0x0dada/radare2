@@ -124,7 +124,7 @@ static void find_and_change (char* in, int len) {
 		} else if (ctx.type == TYPE_SYM) {
 			if (!ctx.leftlen && ctx.left && IS_WHITESPACE (*in)) {
 				ctx.leftlen = in - ctx.left + 3;
-			} else if (ctx.comment && *in == '(' && (IS_ALPHA (in[-1]) || *ctx.right == '*') && !ctx.right) {
+			} else if (ctx.comment && *in == '(' && IS_ALPHA (in[-1]) && !ctx.right) {
 				// ok so i've found a function written in this way:
 				// type = [const|void|int|float|double|short|long]
 				// type fcn_name (type arg1, type arg2, ...)
@@ -174,6 +174,7 @@ R_API int r_core_pseudo_code(RCore *core, const char *input) {
 	r_config_save_num (hc, "asm.offset", "asm.flags", "asm.fcnlines", "asm.comments", NULL);
 	r_config_save_num (hc, "asm.functions", "asm.section", "asm.cmtcol", "asm.filter", NULL);
 	r_config_save_num (hc, "scr.color", "asm.emustr", "asm.emu", "asm.emuwrite", NULL);
+	r_config_save_num (hc, "io.cache", NULL);
 	if (!fcn) {
 		eprintf ("Cannot find function in 0x%08"PFMT64x"\n", core->offset);
 		r_config_hold_free (hc);
@@ -196,6 +197,7 @@ R_API int r_core_pseudo_code(RCore *core, const char *input) {
 	r_config_set_i (core->config, "asm.tabs", 0);
 	r_config_set_i (core->config, "asm.section", 0);
 	r_config_set_i (core->config, "asm.cmtcol", 30);
+	r_config_set_i (core->config, "io.cache", 1);
 	r_core_cmd0 (core, "aeim");
 
 	db = sdb_new0 ();
@@ -221,8 +223,11 @@ R_API int r_core_pseudo_code(RCore *core, const char *input) {
 #define SET_INDENT(x) { memset (indentstr, ' ', x*I_TAB); indentstr [(x*I_TAB)-2] = 0; }
 		if (!bb) break;
 		r_cons_push ();
+		bool html = r_config_get_i (core->config, "scr.html");
+		r_config_set_i (core->config, "scr.html", 0);
 		char *code = r_core_cmd_str (core, sdb_fmt (0, "pD %d @ 0x%08"PFMT64x"\n", bb->size, bb->addr));
 		r_cons_pop ();
+		r_config_set_i (core->config, "scr.html", html);
 		memset (indentstr, ' ', indent * I_TAB);
 		indentstr [(indent * I_TAB) - 2] = 0;
 		code = r_str_prefix_all (code, indentstr);

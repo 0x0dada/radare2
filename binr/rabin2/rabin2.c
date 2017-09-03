@@ -25,7 +25,7 @@ static ut64 at = 0LL;
 static RLib *l;
 
 static int rabin_show_help(int v) {
-	printf ("Usage: rabin2 [-AcdeEghHiIjlLMqrRsSvVxzZ] [-@ at] [-a arch] [-b bits] [-B addr]\n"
+	printf ("Usage: rabin2 [-AcdeEghHiIjlLMqrRsSUvVxzZ] [-@ at] [-a arch] [-b bits] [-B addr]\n"
 		"              [-C F:C:D] [-f str] [-m addr] [-n str] [-N m:M] [-P[-P] pdb]\n"
 		"              [-o str] [-O str] [-k query] [-D lang symname] | file\n");
 	if (v) {
@@ -36,6 +36,7 @@ static int rabin_show_help(int v) {
 		" -b [bits]       set bits (32, 64 ...)\n"
 		" -B [addr]       override base address (pie bins)\n"
 		" -c              list classes\n"
+		" -cc             list classes in header format\n"
 		" -C [fmt:C:D]    create [elf,mach0,pe] with Code and Data hexpairs (see -a)\n"
 		" -d              show debug/dwarf information\n"
 		" -D lang name    demangle symbol name (-D all for bin.demangle=true)\n"
@@ -71,10 +72,11 @@ static int rabin_show_help(int v) {
 		" -s              symbols\n"
 		" -S              sections\n"
 		" -u              unfiltered (no rename duplicated symbols/sections)\n"
+		" -U              resoUrces\n"
 		" -v              display version and quit\n"
 		" -V              Show binary version information\n"
 		" -x              extract bins contained in file\n"
-		" -X [fmt] [f] .. package in fat or zip the given files andbins contained in file\n"
+		" -X [fmt] [f] .. package in fat or zip the given files and bins contained in file\n"
 		" -z              strings (from data section)\n"
 		" -zz             strings (from raw bins [e bin.rawstr=1])\n"
 		" -zzz            dump raw strings to stdout (for huge files)\n"
@@ -608,7 +610,7 @@ int main(int argc, char **argv) {
 #define is_active(x) (action & x)
 #define set_action(x) actions++; action |= x
 #define unset_action(x) action &= ~x
-	while ((c = getopt (argc, argv, "DjgAf:F:a:B:G:b:cC:k:K:dD:Mm:n:N:@:isSVIHeElRwO:o:pPqQrvLhuxXzZ")) != -1) {
+	while ((c = getopt (argc, argv, "DjgAf:F:a:B:G:b:cC:k:K:dD:Mm:n:N:@:isSVIHeEUlRwO:o:pPqQrvLhuxXzZ")) != -1) {
 		switch (c) {
 		case 'g':
 			set_action (R_BIN_REQ_CLASSES);
@@ -641,7 +643,13 @@ int main(int argc, char **argv) {
 		case 'u': bin->filter = 0; break;
 		case 'k': query = optarg; break;
 		case 'K': chksum = optarg; break;
-		case 'c': set_action (R_BIN_REQ_CLASSES); break;
+		case 'c': 
+			if (is_active (R_BIN_REQ_CLASSES)) {
+				rad = R_CORE_BIN_CLASSDUMP;
+			} else {
+			  	set_action (R_BIN_REQ_CLASSES); 
+			}
+			break;
 		case 'f': arch_name = strdup (optarg); break;
 		case 'F': forcebin = optarg; break;
 		case 'b': bits = r_num_math (NULL, optarg); break;
@@ -659,7 +667,7 @@ int main(int argc, char **argv) {
 					/* to store them just dump'm all to stdout */
 					rawstr = 2;
 				} else {
-					rawstr = true;
+					rawstr = 1;
 				}
 			} else {
 				set_action (R_BIN_REQ_STRINGS);
@@ -690,6 +698,7 @@ int main(int argc, char **argv) {
 			break;
 		case 'e': set_action (R_BIN_REQ_ENTRIES); break;
 		case 'E': set_action (R_BIN_REQ_EXPORTS); break;
+		case 'U': set_action (R_BIN_REQ_RESOURCES); break;
 		case 'Q': set_action (R_BIN_REQ_DLOPEN); break;
 		case 'M': set_action (R_BIN_REQ_MAIN); break;
 		case 'l': set_action (R_BIN_REQ_LIBS); break;
@@ -725,6 +734,7 @@ int main(int argc, char **argv) {
 		case 'v': return blob_version ("rabin2");
 		case 'L':
 			set_action (R_BIN_REQ_LISTPLUGINS);
+			break;
 		case 'G':
 			laddr = r_num_math (NULL, optarg);
 			if (laddr == UT64_MAX) {
@@ -1000,61 +1010,13 @@ int main(int argc, char **argv) {
 		free (arch_name);
 	}
 	if (action & R_BIN_REQ_PDB_DWNLD) {
-		int ret;
-		char *path;
-		SPDBDownloaderOpt opt;
-		SPDBDownloader pdb_downloader;
-		RBinInfo *info = r_bin_get_info (core.bin);
-		char *env_pdbserver = r_sys_getenv ("PDB_SERVER");
-		char *env_pdbextract = r_sys_getenv("PDB_EXTRACT");
-		char *env_useragent = r_sys_getenv("PDB_USER_AGENT");
-
-		if (!info || !info->debug_file_name) {
-			eprintf ("Can't find debug filename\n");
-			r_core_fini (&core);
-			return 1;
-		}
-
-		if (info->file) {
-			path = r_file_dirname (info->file);
-		} else {
-			path = strdup (".");
-		}
-
-		if (env_pdbserver && *env_pdbserver) {
-			r_config_set (core.config, "pdb.server", env_pdbserver);
-		}
-		if (env_useragent && *env_useragent) {
-			r_config_set (core.config, "pdb.useragent", env_useragent);
-		}
-		if (env_pdbextract && *env_pdbextract) {
-			r_config_set_i (core.config, "pdb.extract", !(*env_pdbextract == '0'));
-		}
-		free (env_pdbextract);
-		free (env_useragent);
-
-		opt.dbg_file = info->debug_file_name;
-		opt.guid = info->guid;
-		opt.symbol_server = (char *)r_config_get (core.config, "pdb.server");
-		opt.user_agent = (char *)r_config_get (core.config, "pdb.useragent");
-		opt.path = path;
-		opt.extract = r_config_get_i(core.config, "pdb.extract");
-
-		init_pdb_downloader (&opt, &pdb_downloader);
-		ret = pdb_downloader.download (&pdb_downloader);
-		if (isradjson) {
-			printf ("%s\"pdb\":{\"file\":\"%s\",\"download\":%s}",
-				actions_done?",":"", opt.dbg_file, ret?"true":"false");
-		} else {
-			printf ("PDB \"%s\" download %s\n",
-				opt.dbg_file, ret? "success": "failed");
-		}
-		actions_done++;
-		deinit_pdb_downloader (&pdb_downloader);
-
-		free (path);
+		SPDBOptions pdbopts;
+		pdbopts.user_agent = (char*) r_config_get (core.config, "pdb.useragent");
+		pdbopts.symbol_server = (char*) r_config_get (core.config, "pdb.server");
+		pdbopts.extract = r_config_get_i (core.config, "pdb.extract");
+		int r = r_bin_pdb_download (&core, isradjson, &actions_done, &pdbopts);
 		r_core_fini (&core);
-		return 0;
+		return r;
 	}
 
 	if ((tmp = r_sys_getenv ("RABIN2_PREFIX"))) {
@@ -1069,6 +1031,7 @@ int main(int argc, char **argv) {
 	run_action ("classes", R_BIN_REQ_CLASSES, R_CORE_BIN_ACC_CLASSES);
 	run_action ("symbols", R_BIN_REQ_SYMBOLS, R_CORE_BIN_ACC_SYMBOLS);
 	run_action ("exports", R_BIN_REQ_EXPORTS, R_CORE_BIN_ACC_EXPORTS);
+	run_action ("resources", R_BIN_REQ_RESOURCES, R_CORE_BIN_ACC_RESOURCES);
 	run_action ("strings", R_BIN_REQ_STRINGS, R_CORE_BIN_ACC_STRINGS);
 	run_action ("info", R_BIN_REQ_INFO, R_CORE_BIN_ACC_INFO);
 	run_action ("fields", R_BIN_REQ_FIELDS, R_CORE_BIN_ACC_FIELDS);

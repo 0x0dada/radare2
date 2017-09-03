@@ -51,6 +51,7 @@ static RList * extractall(RBin *bin) {
 	nlib = data->file_count;
 	result = r_list_newf (r_bin_xtrdata_free);
 	if (!result) {
+		r_bin_xtrdata_free (data);
 		return NULL;
 	}
 	r_list_append (result, data);
@@ -129,7 +130,7 @@ static RBinXtrData *oneshot(RBin *bin, const ut8* buf, ut64 size, int idx) {
 	hdr = MACH0_(get_hdr_from_bytes) (lib->b);
 	if (!hdr) {
 		free (lib);
-		free (hdr);
+		free (metadata);
 		return NULL;
 	}
 	fill_metadata_info_from_hdr (metadata, hdr);

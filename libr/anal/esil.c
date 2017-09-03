@@ -89,6 +89,7 @@ R_API RAnalEsil *r_anal_esil_new(int stacksize, int iotrap) {
 	esil->ops = sdb_new0 ();
 	esil->iotrap = iotrap;
 	esil->interrupts = sdb_new0 ();
+	esil->sessions = r_list_newf (r_anal_esil_session_free);
 	return esil;
 }
 
@@ -123,8 +124,9 @@ R_API int r_anal_esil_set_interrupt(RAnalEsil *esil, int interrupt, RAnalEsilInt
 }
 
 R_API int r_anal_esil_fire_trap(RAnalEsil *esil, int trap_type, int trap_code) {
-	if (!esil)
+	if (!esil) {
 		return false;
+	}
 	if (esil->cmd) {
 		if (esil->cmd (esil, esil->cmd_trap, trap_type, trap_code)) {
 			return true;
@@ -133,8 +135,9 @@ R_API int r_anal_esil_fire_trap(RAnalEsil *esil, int trap_type, int trap_code) {
 	if (esil->anal) {
 		RAnalPlugin *ap = esil->anal->cur;
 		if (ap && ap->esil_trap) {
-			if (ap->esil_trap (esil, trap_type, trap_code))
+			if (ap->esil_trap (esil, trap_type, trap_code)) {
 				return true;
+			}
 		}
 	}
 #if 0
@@ -152,10 +155,8 @@ R_API int r_anal_esil_fire_interrupt(RAnalEsil *esil, int interrupt) {
 	if (!esil) {
 		return false;
 	}
-	if (esil->cmd) {
-		if (esil->cmd (esil, esil->cmd_intr, interrupt, 0)) {
-			return true;
-		}
+	if (esil->cmd && esil->cmd (esil, esil->cmd_intr, interrupt, 0)) {
+		return true;
 	}
 	if (esil->anal) {
 		RAnalPlugin *ap = esil->anal->cur;
@@ -197,26 +198,48 @@ R_API void r_anal_esil_free(RAnalEsil *esil) {
 	esil->interrupts = NULL;
 	sdb_free (esil->stats);
 	esil->stats = NULL;
+	sdb_free (esil->db_trace);
+	esil->db_trace = NULL;
 	r_anal_esil_stack_free (esil);
 	free (esil->stack);
 	if (esil->anal && esil->anal->cur && esil->anal->cur->esil_fini) {
 		esil->anal->cur->esil_fini (esil);
 	}
+	r_list_free (esil->sessions);
+	free (esil->cmd_intr);
+	free (esil->cmd_trap);
+	free (esil->cmd_mdev);
+	free (esil->cmd_todo);
+	free (esil->cmd_ioer);
 	free (esil);
 }
 
 static ut8 esil_internal_sizeof_reg(RAnalEsil *esil, const char *r) {
-	RRegItem *ri;
 	if (!esil || !esil->anal || !esil->anal->reg || !r) {
 		return 0;
 	}
-	ri = r_reg_get (esil->anal->reg, r, -1);
+	RRegItem *ri = r_reg_get (esil->anal->reg, r, -1);
 	return ri? ri->size: 0;
+}
+
+static bool alignCheck(RAnalEsil *esil, ut64 addr) {
+	int dataAlign = r_anal_archinfo (esil->anal, R_ANAL_ARCHINFO_DATA_ALIGN);
+	if (dataAlign > 0) {
+		if (addr % dataAlign) {
+			return false;
+		}
+	}
+	return true;
 }
 
 static int internal_esil_mem_read(RAnalEsil *esil, ut64 addr, ut8 *buf, int len) {
 	if (!esil || !esil->anal || !esil->anal->iob.io) {
 		return 0;
+	}
+	if (!alignCheck (esil, addr)) {
+		esil->trap = R_ANAL_TRAP_READ_ERR;
+		esil->trap_code = addr;
+		return false;
 	}
 	if (esil->cmd_mdev && esil->mdev_range) {
 		if (r_str_range_in (esil->mdev_range, addr)) {
@@ -225,14 +248,42 @@ static int internal_esil_mem_read(RAnalEsil *esil, ut64 addr, ut8 *buf, int len)
 			}
 		}
 	}
-	return esil->anal->iob.read_at (esil->anal->iob.io, addr, buf, len);
+	//TODO: Check if error return from read_at.(on previous version of r2 this call always return len)
+	(void)esil->anal->iob.read_at (esil->anal->iob.io, addr, buf, len);
+	// check if request addres is mapped , if dont fire trap and esil ioer callback
+	// now with siol, read_at return true/false cant be used to check error vs len
+	if (!esil->anal->iob.is_valid_offset (esil->anal->iob.io, addr, false)) {
+		if (esil->iotrap) {
+			esil->trap = R_ANAL_TRAP_READ_ERR;
+			esil->trap_code = addr;
+		}
+		if (esil->cmd && esil->cmd_ioer && *esil->cmd_ioer) {
+			esil->cmd (esil, esil->cmd_ioer, esil->address, 0);
+		}
+	}
+	return len;
 }
 
 static int internal_esil_mem_read_no_null(RAnalEsil *esil, ut64 addr, ut8 *buf, int len) {
 	if (!esil || !esil->anal || !esil->anal->iob.io || !addr) {
 		return 0;
 	}
-	return esil->anal->iob.read_at (esil->anal->iob.io, addr, buf, len);
+	if (!alignCheck (esil, addr)) {
+		esil->trap = R_ANAL_TRAP_READ_ERR;
+		esil->trap_code = addr;
+		return false;
+	}
+	//TODO: Check if error return from read_at.(on previous version of r2 this call always return len)
+	(void)esil->anal->iob.read_at (esil->anal->iob.io, addr, buf, len);
+	// check if request addres is mapped , if dont fire trap and esil ioer callback
+	// now with siol, read_at return true/false cant be used to check error vs len
+	if (!esil->anal->iob.is_valid_offset (esil->anal->iob.io, addr, false)) {
+		if (esil->iotrap) {
+			esil->trap = R_ANAL_TRAP_READ_ERR;
+			esil->trap_code = addr;
+		}
+	}
+	return len;
 }
 
 R_API int r_anal_esil_mem_read(RAnalEsil *esil, ut64 addr, ut8 *buf, int len) {
@@ -242,6 +293,11 @@ R_API int r_anal_esil_mem_read(RAnalEsil *esil, ut64 addr, ut8 *buf, int len) {
 	}
 	if (esil->cb.hook_mem_read) {
 		ret = esil->cb.hook_mem_read (esil, addr, buf, len);
+	}
+	if (!alignCheck (esil, addr)) {
+		esil->trap = R_ANAL_TRAP_READ_ERR;
+		esil->trap_code = addr;
+		return false;
 	}
 	if (!ret && esil->cb.mem_read) {
 		ret = esil->cb.mem_read (esil, addr, buf, len);
@@ -263,9 +319,14 @@ R_API int r_anal_esil_mem_read(RAnalEsil *esil, ut64 addr, ut8 *buf, int len) {
 }
 
 static int internal_esil_mem_write(RAnalEsil *esil, ut64 addr, const ut8 *buf, int len) {
-	int ret;
+	int ret = 0;
 	if (!esil || !esil->anal || !esil->anal->iob.io || esil->nowrite) {
 		return 0;
+	}
+	if (!alignCheck (esil, addr)) {
+		esil->trap = R_ANAL_TRAP_READ_ERR;
+		esil->trap_code = addr;
+		return false;
 	}
 	if (esil->cmd_mdev && esil->mdev_range) {
 		if (r_str_range_in (esil->mdev_range, addr)) {
@@ -274,26 +335,37 @@ static int internal_esil_mem_write(RAnalEsil *esil, ut64 addr, const ut8 *buf, i
 			}
 		}
 	}
-	ret = esil->anal->iob.write_at (esil->anal->iob.io, addr, buf, len);
-	if (ret != len) {
+	if (esil->anal->iob.write_at (esil->anal->iob.io, addr, buf, len)) {
+		ret = len;
+	}
+	// check if request addres is mapped , if dont fire trap and esil ioer callback
+	// now with siol, write_at return true/false cant be used to check error vs len
+	if (!esil->anal->iob.is_valid_offset (esil->anal->iob.io, addr, false)) {
 		if (esil->iotrap) {
 			esil->trap = R_ANAL_TRAP_WRITE_ERR;
 			esil->trap_code = addr;
+		}
+		if (esil->cmd && esil->cmd_ioer && *esil->cmd_ioer) {
+			esil->cmd (esil, esil->cmd_ioer, esil->address, 0);
 		}
 	}
 	return ret;
 }
 
 static int internal_esil_mem_write_no_null(RAnalEsil *esil, ut64 addr, const ut8 *buf, int len) {
-	int ret;
+	int ret = 0;
 	if (!esil || !esil->anal || !esil->anal->iob.io || !addr) {
 		return 0;
 	}
 	if (esil->nowrite) {
 		return 0;
 	}
-	ret = esil->anal->iob.write_at (esil->anal->iob.io, addr, buf, len);
-	if (ret != len) {
+	if (esil->anal->iob.write_at (esil->anal->iob.io, addr, buf, len)) {
+		ret = len;
+	}
+	// check if request addres is mapped , if dont fire trap and esil ioer callback
+	// now with siol, write_at return true/false cant be used to check error vs len
+	if (!esil->anal->iob.is_valid_offset (esil->anal->iob.io, addr, false)) {
 		if (esil->iotrap) {
 			esil->trap = R_ANAL_TRAP_WRITE_ERR;
 			esil->trap_code = addr;
@@ -977,9 +1049,16 @@ static int esil_lsl(RAnalEsil *esil) {
 	char *src = r_anal_esil_pop (esil);
 	if (dst && r_anal_esil_get_parm (esil, dst, &num)) {
 		if (src && r_anal_esil_get_parm (esil, src, &num2)) {
-			ut64 res = num << num2;
-			r_anal_esil_pushnum (esil, res);
-			ret = 1;
+			if (num2 > sizeof (ut64) * 8) {
+				ERR ("esil_lsl: shift is too big");
+			} else {
+				if (num2 > 63) {
+					r_anal_esil_pushnum (esil, 0);
+				} else {
+					r_anal_esil_pushnum (esil, num << num2);
+				}
+				ret = 1;
+			}
 		} else {
 			ERR ("esil_lsl: empty stack");
 		}
@@ -996,12 +1075,20 @@ static int esil_lsleq(RAnalEsil *esil) {
 	char *src = r_anal_esil_pop (esil);
 	if (dst && r_anal_esil_reg_read (esil, dst, &num, NULL)) {
 		if (src && r_anal_esil_get_parm (esil, src, &num2)) {
-			esil->old = num;
-			num <<= num2;
-			esil->cur = num;
-			esil->lastsz = esil_internal_sizeof_reg (esil, dst);
-			r_anal_esil_reg_write (esil, dst, num);
-			ret = 1;
+			if (num2 > sizeof (ut64) * 8) {
+				ERR ("esil_lsleq: shift is too big");
+			} else {
+				esil->old = num;
+				if (num2 > 63) {
+					num = 0;
+				} else {
+					num <<= num2;
+				}
+				esil->cur = num;
+				esil->lastsz = esil_internal_sizeof_reg (esil, dst);
+				r_anal_esil_reg_write (esil, dst, num);
+				ret = 1;
+			}
 		} else {
 			ERR ("esil_lsleq: empty stack");
 		}
@@ -1018,7 +1105,7 @@ static int esil_lsr(RAnalEsil *esil) {
 	char *src = r_anal_esil_pop (esil);
 	if (dst && r_anal_esil_get_parm (esil, dst, &num)) {
 		if (src && r_anal_esil_get_parm (esil, src, &num2)) {
-			ut64 res = num >> num2;
+			ut64 res = num >> R_MIN(num2, 63);
 			r_anal_esil_pushnum (esil, res);
 			ret = 1;
 		} else {
@@ -1125,8 +1212,8 @@ static int esil_asr(RAnalEsil *esil) {
 				ut64 mask = (regsize - 1);
 				param_num &= mask;
 				ut64 left_bits = 0;
-				if (op_num & (1 << (regsize - 1))) {
-					left_bits = (1 << param_num) - 1;
+				if (op_num & (1UL << (regsize - 1))) {
+					left_bits = (1UL << param_num) - 1;
 					left_bits <<= regsize - param_num;
 				}
 				op_num = left_bits | (op_num >> param_num);
@@ -1665,7 +1752,12 @@ static int esil_poke_n(RAnalEsil *esil, int bits) {
 		if (dst && r_anal_esil_get_parm (esil, dst, &addr)) {
 			int type = r_anal_esil_get_parm_type (esil, src);
 			if (type != R_ANAL_ESIL_PARM_INTERNAL) {
+				// this is a internal peek performed before a poke
+				// we disable hooks to avoid run hooks on internal peeks
+				int * oldhook = esil->cb.hook_mem_read;
+				esil->cb.hook_mem_read = NULL;
 				r_anal_esil_mem_read (esil, addr, b, bytes);
+				esil->cb.hook_mem_read = oldhook;
 				n = r_read_ble64 (b, esil->anal->big_endian);
 				esil->old = n;
 				esil->cur = num;
@@ -2508,6 +2600,9 @@ static int iscommand(RAnalEsil *esil, const char *word, RAnalEsilOp *op) {
 
 static int runword(RAnalEsil *esil, const char *word) {
 	RAnalEsilOp op = NULL;
+	if (!word) {
+		return 0;
+	}
 	esil->parse_goto_count--;
 	if (esil->parse_goto_count < 1) {
 		ERR ("ESIL infinite loop detected\n");
@@ -2598,6 +2693,9 @@ static const char *gotoWord(const char *str, int n) {
  * 3: normal continuation
  */
 static int evalWord(RAnalEsil *esil, const char *ostr, const char **str) {
+	if (!esil || !str || !*str) {
+		return 0;
+	}
 	if ((*str)[0] && (*str)[1] == ',') {
 		return 2;
 	}
@@ -2634,6 +2732,11 @@ R_API int r_anal_esil_parse(RAnalEsil *esil, const char *str) {
 		return 0;
 	}
 	esil->trap = 0;
+	if (esil->cmd && esil->cmd_todo) {
+		if (!strncmp (str, "TODO", 4)) {
+			esil->cmd (esil, esil->cmd_todo, esil->address, 0);
+		}
+	}
 loop:
 	esil->repeat = 0;
 	esil->skip = 0;
@@ -2674,8 +2777,9 @@ repeat:
 					case 1: return 0;
 					case 2: continue;
 				}
-				if (dorunword == 1)
+				if (dorunword == 1) {
 					return 0;
+				}
 			}
 			str++;
 		}
@@ -2694,6 +2798,20 @@ repeat:
 		case 1: return 0;
 		case 2: goto repeat;
 		}
+	}
+	return 1;
+}
+
+R_API int r_anal_esil_runword(RAnalEsil *esil, const char *word) {
+	const char *str = NULL;
+	runword (esil, word);
+	if (*word) {
+		if (!runword (esil, word)) {
+			return 0;
+		}
+		int ew = evalWord (esil, word, &str);
+		eprintf ("ew %d\n", ew);
+		eprintf ("--> %s\n", r_str_get (str));
 	}
 	return 1;
 }

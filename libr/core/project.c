@@ -1,10 +1,34 @@
-/* radare - LGPL - Copyright 2010-2016 - pancake, maijin */
+/* radare - LGPL - Copyright 2010-2017 - pancake, maijin */
 
 #include <r_types.h>
 #include <r_list.h>
 #include <r_flag.h>
 #include <r_core.h>
 #include <spp/spp.h>
+
+#if 0
+static void __section_list_for_projects (RIO *io, RPrint *print) {
+	int i = 0;
+	SdbListIter *iter;
+	RIOSection *s;
+
+	if (!io || !io->sections || !print || !print->cb_printf) {
+		return;
+	}
+	ls_foreach (io->sections, iter, s) {	
+		print->cb_printf ("[%02d] 0x%08"PFMT64x" %s va=0x%08"PFMT64x
+			" sz=0x%04"PFMT64x" vsz=0x%04"PFMT64x" %s",
+			i, s->paddr, r_str_rwx_i (s->flags), s->vaddr,
+			s->size, s->vsize, s->name);
+		if (s->arch && s->bits) {
+			print->cb_printf ("  ; %s %d", r_sys_arch_str (s->arch),
+				s->bits);
+		}
+		print->cb_printf ("\n");
+		i++;
+	}
+}
+#endif
 
 static bool is_valid_project_name(const char *name) {
 	int i;
@@ -43,8 +67,7 @@ static char *projectScriptPath(RCore *core, const char *file) {
 		if (!is_valid_project_name (file)) {
 			return NULL;
 		}
-		prjfile = r_file_abspath (r_config_get (
-				core->config, "dir.projects"));
+		prjfile = r_file_abspath (r_config_get (core->config, "dir.projects"));
 		prjfile = r_str_append (prjfile, R_SYS_DIR);
 		prjfile = r_str_append (prjfile, file);
 		if (!r_file_exists (prjfile) || r_file_is_directory (prjfile)) {
@@ -285,6 +308,7 @@ R_API void r_core_project_execute_cmds(RCore *core, const char *prjfile) {
 	char *str = r_core_project_notes_file (core, prjfile);
 	char *data = r_file_slurp (str, NULL);
 	if (!data) {
+		free (str);
 		return;
 	}
 	Output out;
@@ -304,6 +328,7 @@ R_API void r_core_project_execute_cmds(RCore *core, const char *prjfile) {
 		bol = strtok (NULL, "\n");
 	}
 	free (data);
+	free (str);
 }
 
 /*** vvv thready ***/
@@ -338,18 +363,18 @@ R_API RThread *r_core_project_load_bg(RCore *core, const char *prjName, const ch
 R_API bool r_core_project_open(RCore *core, const char *prjfile, bool thready) {
 	int askuser = 1;
 	int ret, close_current_session = 1;
-	char *prj, *filepath, *oldbin;
+	char *oldbin;
 	const char *newbin;
 	ut64 mapaddr = 0;
 	if (!prjfile || !*prjfile) {
 		return false;
 	}
-	prj = projectScriptPath (core, prjfile);
+	char *prj = projectScriptPath (core, prjfile);
 	if (!prj) {
 		eprintf ("Invalid project name '%s'\n", prjfile);
 		return false;
 	}
-	filepath = r_core_project_info (core, prj);
+	char *filepath = r_core_project_info (core, prj);
 	// eprintf ("OPENING (%s) from %s\n", prj, r_config_get (core->config, "file.path"));
 	/* if it is not an URI */
 	if (!filepath) {
@@ -366,7 +391,11 @@ R_API bool r_core_project_open(RCore *core, const char *prjfile, bool thready) {
 			return false;
 		}
 	}
-	oldbin = strdup (r_config_get (core->config, "file.path"));
+	const char *file_path = r_config_get (core->config, "file.path");
+	if (!file_path || !*file_path) {
+		file_path = r_config_get (core->config, "file.lastpath");
+	}
+	oldbin = strdup (file_path);
 	if (!strcmp (prjfile, r_config_get (core->config, "prj.name"))) {
 		// eprintf ("Reloading project\n");
 		askuser = 0;
@@ -396,10 +425,8 @@ R_API bool r_core_project_open(RCore *core, const char *prjfile, bool thready) {
 		fh = r_core_file_open (core, filepath, 0, 0);
 		if (!fh) {
 			eprintf ("Cannot open file '%s'\n", filepath);
-			free (oldbin);
-			free (filepath);
-			free (prj);
-			return false;
+			ret = false;
+			goto beach;
 		}
 	}
 
@@ -415,9 +442,13 @@ R_API bool r_core_project_open(RCore *core, const char *prjfile, bool thready) {
 		ret = r_core_project_load (core, prjfile, prj);
 	}
 	newbin = r_config_get (core->config, "file.path");
+	if (!newbin || !*newbin) {
+		newbin = r_config_get (core->config, "file.lastpath");
+	}
 	if (strcmp (oldbin, newbin)) {
 		eprintf ("WARNING: file.path changed: %s => %s\n", oldbin, newbin);
 	}
+beach:
 	free (oldbin);
 	free (filepath);
 	free (prj);
@@ -442,6 +473,11 @@ R_API char *r_core_project_info(RCore *core, const char *prjfile) {
 			if (!strncmp (buf, "\"e file.path = ", 15)) {
 				buf[strlen (buf) - 2] = 0;
 				file = r_str_new (buf + 15);
+				break;
+			}
+			if (!strncmp (buf, "\"e file.lastpath = ", 19)) {
+				buf[strlen (buf) - 2] = 0;
+				file = r_str_new (buf + 19);
 				break;
 			}
 			// TODO: deprecate before 1.0
@@ -515,8 +551,9 @@ static bool projectSaveScript(RCore *core, const char *file, int opts) {
 	}
 	if (opts & R_CORE_PRJ_SECTIONS) {
 		r_str_write (fd, "# sections\n");
-		r_io_section_list (core->io, core->offset, 1);
-		r_cons_flush ();
+		r_core_cmd (core, "S*", 0);
+		// __section_list_for_projects (core->io, core->print);
+		// r_cons_flush ();
 	}
 	if (opts & R_CORE_PRJ_META) {
 		r_str_write (fd, "# meta\n");
@@ -717,7 +754,8 @@ R_API bool r_core_project_save(RCore *core, const char *prjName) {
 		// reset prj.name on fail
 		r_config_set (core->config, "prj.name", oldPrjName);
 	}
-	free(oldPrjName);
+	free (scriptPath);
+	free (oldPrjName);
 	return ret;
 }
 

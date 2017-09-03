@@ -15,86 +15,89 @@
 //    0x0001f41c      eabe76de12       jmp word 0x12de:0x76be [2]
 //    0x0001f56a      ea7ed73cd3       jmp word 0xd33c:0xd77e [6]
 static int replace(int argc, const char *argv[], char *newstr) {
-	int i,j,k;
+#define MAXPSEUDOOPS 10
+	int i, j, k, d;
+	char ch;
 	struct {
 		char *op;
 		char *str;
+		int args[MAXPSEUDOOPS];  // XXX can't use flex arrays, all unused will be 0
 	} ops[] = {
-		{ "adc",  "1 += 2"},
-		{ "add",  "1 += 2"},
-		{ "and",  "1 &= 2"},
-		{ "call", "1 ()"},
-		{ "cmove", "1 = 2"},
-		{ "cmovl","ifnot zf,1 = 2"},
-		{ "cmp", "if (1 == 2"},
-		{ "cmpsq", "if (1 == 2"},
-		{ "cmsb", "if (1 == 2"},
-		{ "cmsw", "if (1 == 2"},
-		{ "dec",  "1--"},
-		{ "div",  "1 /= 2"},
-		{ "fabs",  "abs(1)"},
-		{ "fadd",  "1 = 1 + 2"},
-		{ "fcomp",  "if (1 == 2"},
-		{ "fcos",  "1 = cos(1)"},
-		{ "fdiv",  "1 = 1 / 2"},
-		{ "fiadd",  "1 = 1 / 2"},
-		{ "ficom",  "if (1 == 2"},
-		{ "fidiv",  "1 = 1 / 2"},
-		{ "fidiv",  "1 = 1 * 2"},
-		{ "fisub",  "1 = 1 - 2"},
-		{ "fnul",  "1 = 1 * 2"},
-		{ "fnop",  " "},
-		{ "frndint",  "1 = (int) 1"},
-		{ "fsin",  "1 = sin(1)"},
-		{ "fsqrt",  "1 = sqrt(1)"},
-		{ "fsub",  "1 = 1 - 2"},
-		{ "fxch",  "1,2 = 2,1"},
-		{ "idiv",  "1 /= 2"},
-		{ "imul",  "1 *= 2"},
-		{ "in",   "1 = io[2]"},
-		{ "inc",  "1++"},
-		{ "ja", "isAbove 1)"},
-		{ "jb", "isBelow 1)"},
-		{ "jbe", "isBelowOrEqual 1)"},
-		{ "je", "isZero 1)"},
-		{ "jg", "isGreater 1)"},
-		{ "jge", "isGreaterOrEqual 1)"},
-		{ "jle", "isLessOrEqual 1)"},
-		{ "jmp",  "goto 1"},
-		{ "jne", "notZero 1)"},
-		{ "lea",  "1 = 2"},
-		{ "mov",  "1 = 2"},
-		{ "movsd",  "1 = 2"},
-		{ "movsx","1 = 2"},
-		{ "movsxd","1 = 2"},
-		{ "movzx", "1 = 2"},
-		{ "movntdq", "1 = 2"},
-		{ "movnti", "1 = 2"},
-		{ "movntpd", "1 = 2"},
-		{ "mul",  "1 *= 2"},
-		{ "neg",  "1 ~= 1"},
-		{ "nop",  ""},
-		{ "not",  "1 = !1"},
-		{ "or",   "1 |= 2"},
-		{ "out",  "io[1] = 2"},
-		{ "pop",  "pop 1"},
-		{ "push", "push 1"},
-		{ "sal",  "1 <<= 2"},
-		{ "sar",  "1 >>= 2"},
-		{ "sete",  "1 = e"},
-		{ "setne",  "1 = ne"},
-		{ "shl",  "1 <<<= 2"},
-		{ "shld",  "1 <<<= 2"},
-		{ "sbb",  "1 = 1 - 2"},
-		{ "shr",  "1 >>>= 2"},
-		{ "shlr",  "1 >>>= 2"},
-		//{ "strd",  "1 = 2 - 3"},
-		{ "sub",  "1 -= 2"},
-		{ "swap", "swap 1, 2"},
-		{ "test", "if (1 == 2"},
-		{ "xchg",  "1,2 = 2,1"},
-		{ "xadd",  "1,2 = 2,1+2"},
-		{ "xor",  "1 ^= 2"},
+		{ "adc",  "# += #", {1, 2}},
+		{ "add",  "# += #", {1, 2}},
+		{ "and",  "# &= #", {1, 2}},
+		{ "call", "# ()", {1}},
+		{ "cmove", "if (!var) # = #", {1, 2}},
+		{ "cmovl","if (var < 0) # = #", {1, 2}},
+		{ "cmp", "var = # - #", {1, 2}},
+		{ "cmpsq", "var = # - #", {1, 2}},
+		{ "cmpsb", "while (CX != 0) { var = *(DS*16 + SI) - *(ES*16 + DI); SI++; DI++; CX--; if (!var) break; }", {0}},
+		{ "cmpsw", "while (CX != 0) { var = *(DS*16 + SI) - *(ES*16 + DI); SI+=4; DI+=4; CX--; if (!var) break; }", {0}},
+		{ "dec",  "#--", {1}},
+		{ "div",  "# /= #", {1, 2}},
+		{ "fabs",  "abs(#)", {1}},
+		{ "fadd",  "# = # + #", {1, 1, 2}},
+		{ "fcomp",  "var = # - #", {1, 2}},
+		{ "fcos",  "# = cos(#)", {1, 1}},
+		{ "fdiv",  "# = # / #", {1, 1, 2}},
+		{ "fiadd",  "# = # / #", {1, 1, 2}},
+		{ "ficom",  "var = # - #", {1, 2}},
+		{ "fidiv",  "# = # / #", {1, 1, 2}},
+		{ "fidiv",  "# = # * #", {1, 1, 2}},
+		{ "fisub",  "# = # - #", {1, 1, 2}},
+		{ "fnul",  "# = # * #", {1, 1, 2}},
+		{ "fnop",  " ", {0}},
+		{ "frndint",  "# = (int) #", {1, 1}},
+		{ "fsin",  "# = sin(#)", {1, 1}},
+		{ "fsqrt",  "# = sqrt(#)", {1, 1}},
+		{ "fsub",  "# = # - #", {1, 1, 2}},
+		{ "fxch",  "#,# = #,#", {1, 2, 2, 1}},
+		{ "idiv",  "# /= #", {1, 2}},
+		{ "imul",  "# *= #", {1, 2}},
+		{ "in",   "# = io[#]", {1, 2}},
+		{ "inc",  "#++", {1}},
+		{ "ja", "if (((unsigned) var) > 0) goto #", {1}},
+		{ "jb", "if (((unsigned) var) < 0) goto #", {1}},
+		{ "jbe", "if (((unsigned) var) <= 0) goto #", {1}},
+		{ "je", "if (!var) goto #", {1}},
+		{ "jg", "if (var > 0) goto #", {1}},
+		{ "jge", "if (var >= 0) goto #", {1}},
+		{ "jle", "if (var <= 0) goto #", {1}},
+		{ "jmp",  "goto #", {1}},
+		{ "jne", "if (var) goto #", {1}},
+		{ "lea",  "# = #", {1, 2}},
+		{ "mov",  "# = #", {1, 2}},
+		{ "movsd",  "# = #", {1, 2}},
+		{ "movsx","# = #", {1, 2}},
+		{ "movsxd","# = #", {1, 2}},
+		{ "movzx", "# = #", {1, 2}},
+		{ "movntdq", "# = #", {1, 2}},
+		{ "movnti", "# = #", {1, 2}},
+		{ "movntpd", "# = #", {1, 2}},
+		{ "mul",  "# *= #", {1, 2}},
+		{ "neg",  "# ~= #", {1, 1}},
+		{ "nop",  "", {0}},
+		{ "not",  "# = !#", {1, 1}},
+		{ "or",   "# |= #", {1, 2}},
+		{ "out",  "io[#] = #", {1, 2}},
+		{ "pop",  "pop #", {1}},
+		{ "push", "push #", {1}},
+		{ "sal",  "# <<= #", {1, 2}},
+		{ "sar",  "# >>= #", {1, 2}},
+		{ "sete",  "# = e", {1}},
+		{ "setne",  "# = ne", {1}},
+		{ "shl",  "# <<<= #", {1, 2}},
+		{ "shld",  "# <<<= #", {1, 2}},
+		{ "sbb",  "# = # - #", {1, 1, 2}},
+		{ "shr",  "# >>>= #", {1, 2}},
+		{ "shlr",  "# >>>= #", {1, 2}},
+		//{ "strd",  "# = # - #", {1, 2, 3}},
+		{ "sub",  "# -= #", {1, 2}},
+		{ "swap", "var = #; # = #; # = var", {1, 1, 2, 2}},
+		{ "test", "var = # & #", {1, 2}},
+		{ "xchg",  "#,# = #,#", {1, 2, 2, 1}},
+		{ "xadd",  "#,# = #,#+#", {1, 2, 2, 1, 2}},
+		{ "xor",  "# ^= #", {1, 2}},
 		{ NULL }
 	};
 
@@ -104,19 +107,35 @@ static int replace(int argc, const char *argv[], char *newstr) {
 			argv[2] = "0";
 		}
 	}
-	for (i=0; ops[i].op != NULL; i++) {
+	for (i = 0; ops[i].op != NULL; i++) {
 		if (!strcmp (ops[i].op, argv[0])) {
 			if (newstr != NULL) {
-				for (j=k=0; ops[i].str[j]!='\0'; j++, k++) {
-					if (ops[i].str[j]>='0' && ops[i].str[j]<='9') {
-						const char *w = argv[ ops[i].str[j]-'0' ];
-						if (w != NULL) {
-							strcpy (newstr+k, w);
-							k += strlen(w)-1;
+				d = 0;
+				j = 0;
+				ch = ops[i].str[j];
+				for (j = 0, k = 0; ch != '\0'; j++, k++) {
+					ch = ops[i].str[j];
+					if (ch == '#') {
+						if (d >= MAXPSEUDOOPS) {
+							// XXX Shouldn't ever happen...
+							continue;
 						}
-					} else newstr[k] = ops[i].str[j];
+						int idx = ops[i].args[d];
+						d++;
+						if (idx <= 0) {
+							// XXX Shouldn't ever happen...
+							continue;
+						}
+						const char *w = argv[idx];
+						if (w != NULL) {
+							strcpy (newstr + k, w);
+							k += strlen (w) - 1;
+						}
+					} else {
+						newstr[k] = ch;
+					}
 				}
-				newstr[k]='\0';
+				newstr[k] = '\0';
 			}
 			return true;
 		}
@@ -131,6 +150,7 @@ static int replace(int argc, const char *argv[], char *newstr) {
 		}
 	}
 	return false;
+#undef MAXPSEUDOOPS
 }
 
 static int parse(RParse *p, const char *data, char *str) {
@@ -138,12 +158,14 @@ static int parse(RParse *p, const char *data, char *str) {
 	int i, len = strlen (data);
 	char *buf, *ptr, *optr;
 
-	if (len>=sizeof (w0))
+	if (len >= sizeof (w0)) {
 		return false;
+	}
 	// malloc can be slow here :?
-	if (!(buf = malloc (len+1)))
+	if (!(buf = malloc (len + 1))) {
 		return false;
-	memcpy (buf, data, len+1);
+	}
+	memcpy (buf, data, len + 1);
 
 	if (*buf) {
 		*w0 = *w1 = *w2 = *w3 = '\0';
@@ -152,7 +174,7 @@ static int parse(RParse *p, const char *data, char *str) {
 			ptr = strchr (buf, '\t');
 		if (ptr) {
 			*ptr = '\0';
-			for (++ptr; *ptr==' '; ptr++);
+			for (++ptr; *ptr == ' '; ptr++);
 			strncpy (w0, buf, sizeof (w0) - 1);
 			strncpy (w1, ptr, sizeof (w1) - 1);
 
@@ -160,14 +182,14 @@ static int parse(RParse *p, const char *data, char *str) {
 			ptr = strchr (ptr, ',');
 			if (ptr) {
 				*ptr = '\0';
-				for (++ptr; *ptr==' '; ptr++);
+				for (++ptr; *ptr == ' '; ptr++);
 				strncpy (w1, optr, sizeof (w1) - 1);
 				strncpy (w2, ptr, sizeof (w2) - 1);
 				optr = ptr;
 				ptr = strchr (ptr, ',');
 				if (ptr) {
 					*ptr = '\0';
-					for (++ptr; *ptr==' '; ptr++);
+					for (++ptr; *ptr == ' '; ptr++);
 					strncpy (w2, optr, sizeof (w2) - 1);
 					strncpy (w3, ptr, sizeof (w3) - 1);
 				}
@@ -176,9 +198,10 @@ static int parse(RParse *p, const char *data, char *str) {
 		{
 			const char *wa[] = { w0, w1, w2, w3 };
 			int nw = 0;
-			for (i=0; i<4; i++) {
-				if (wa[i][0] != '\0')
-				nw++;
+			for (i = 0; i < 4; i++) {
+				if (wa[i][0] != '\0') {
+					nw++;
+				}
 			}
 			replace (nw, wa, str);
 		}
@@ -225,24 +248,19 @@ static void parse_localvar(RParse *p, char *newstr, size_t newstr_len, const cha
 	}
 }
 
-static inline void mk_reg_str(const char *regname, int delta, bool sign,
-				bool att, char *dest, int len)
-{
+static inline void mk_reg_str(const char *regname, int delta, bool sign, bool att, char *dest, int len) {
 	if (att) {
-		if (delta < 10)
-			snprintf(dest, len - 1, "%s%d(%%%s)", sign? "" : "-",
-				 delta, regname);
-		else
-			snprintf(dest, len - 1, "%s0x%x(%%%s)", sign? "" : "-",
-				 delta, regname);
-
+		if (delta < 10) {
+			snprintf (dest, len - 1, "%s%d(%%%s)", sign ? "" : "-", delta, regname);
+		} else {
+			snprintf (dest, len - 1, "%s0x%x(%%%s)", sign ? "" : "-", delta, regname);
+		}
 	} else {
-		if (delta < 10)
-			snprintf(dest, len - 1, "[%s %c %d]",
-				regname, sign? '+':'-', delta);
-		else
-			snprintf(dest, len - 1, "[%s %c 0x%x]",
-				regname, sign? '+':'-', delta);
+		if (delta < 10) {
+			snprintf (dest, len - 1, "[%s %c %d]", regname, sign ? '+':'-', delta);
+		} else {
+			snprintf (dest, len - 1, "[%s %c 0x%x]", regname, sign ? '+':'-', delta);
+		}
 	}
 }
 
@@ -260,7 +278,7 @@ static bool varsub (RParse *p, RAnalFunction *f, ut64 addr, int oplen, char *dat
 
 	if (p->relsub) {
 		if (att) {
-			char *rip = (char *)r_str_casestr (tstr, "(%rip)");
+			char *rip = (char *) r_str_casestr (tstr, "(%rip)");
 			if (rip) {
 				*rip = 0;
 				char *pre = tstr;
@@ -278,7 +296,7 @@ static bool varsub (RParse *p, RAnalFunction *f, ut64 addr, int oplen, char *dat
 				}
 			}
 		} else {
-			char *rip = (char *)r_str_casestr (tstr, "[rip");
+			char *rip = (char *) r_str_casestr (tstr, "[rip");
 			if (rip) {
 				char *ripend = strchr (rip + 3, ']');
 				const char *plus = strchr (rip, '+');
@@ -286,9 +304,15 @@ static bool varsub (RParse *p, RAnalFunction *f, ut64 addr, int oplen, char *dat
 				char *tstr_new;
 				ut64 repl_num = oplen + addr;
 
-				if (!ripend) ripend = "]";
-				if (plus) repl_num += r_num_get (NULL, plus + 1);
-				if (neg) repl_num -= r_num_get (NULL, neg + 1);
+				if (!ripend) {
+					ripend = "]";
+				}
+				if (plus) {
+					repl_num += r_num_get (NULL, plus + 1);
+				}
+				if (neg) {
+					repl_num -= r_num_get (NULL, neg + 1);
+				}
 
 				rip[1] = '\0';
 				tstr_new = r_str_newf ("%s0x%08"PFMT64x"%s", tstr, repl_num, ripend);
@@ -316,14 +340,12 @@ static bool varsub (RParse *p, RAnalFunction *f, ut64 addr, int oplen, char *dat
 	}
 	r_list_foreach (spargs, spiter, sparg) {
 		// assuming delta always positive?
-		mk_reg_str(p->anal->reg->name[R_REG_NAME_SP],
-			sparg->delta, true, att, oldstr, sizeof(oldstr));
+		mk_reg_str (p->anal->reg->name[R_REG_NAME_SP], sparg->delta, true, att, oldstr, sizeof (oldstr));
 
 		if (ucase) {
 			r_str_case (oldstr, true);
 		}
-		parse_localvar (p, newstr, sizeof (newstr), sparg->name,
-			p->anal->reg->name[R_REG_NAME_SP], '+', att);
+		parse_localvar (p, newstr, sizeof (newstr), sparg->name, p->anal->reg->name[R_REG_NAME_SP], '+', att);
 		if (ucase) {
 			char *plus = strchr (newstr, '+');
 			if (plus) {
@@ -354,13 +376,11 @@ static bool varsub (RParse *p, RAnalFunction *f, ut64 addr, int oplen, char *dat
 			sign = '-';
 			bparg->delta = -bparg->delta;
 		}
-		mk_reg_str(p->anal->reg->name[R_REG_NAME_BP],
-			bparg->delta, sign=='+', att, oldstr, sizeof(oldstr));
+		mk_reg_str (p->anal->reg->name[R_REG_NAME_BP], bparg->delta, sign=='+', att, oldstr, sizeof (oldstr));
 		if (ucase) {
 			r_str_case (oldstr, true);
 		}
-		parse_localvar (p, newstr, sizeof (newstr), bparg->name,
-			p->anal->reg->name[R_REG_NAME_BP], sign, att);
+		parse_localvar (p, newstr, sizeof (newstr), bparg->name, p->anal->reg->name[R_REG_NAME_BP], sign, att);
 		if (ucase) {
 			char *plus = strchr (newstr, sign);
 			if (plus) {
@@ -371,7 +391,7 @@ static bool varsub (RParse *p, RAnalFunction *f, ut64 addr, int oplen, char *dat
 				r_str_case (newstr, true);
 			}
 		}
-		char *ptr = strstr(tstr, oldstr);
+		char *ptr = strstr (tstr, oldstr);
 		if (ptr && (!att || *(ptr - 1) == ' ')) {
 			tstr = r_str_replace (tstr, oldstr, newstr, 1);
 			break;
@@ -384,9 +404,7 @@ static bool varsub (RParse *p, RAnalFunction *f, ut64 addr, int oplen, char *dat
 			}
 		}
 		// Try with no spaces
-		snprintf (oldstr, sizeof (oldstr)-1, "[%s%c0x%x]",
-			p->anal->reg->name[R_REG_NAME_BP], sign,
-			bparg->delta);
+		snprintf (oldstr, sizeof (oldstr)-1, "[%s%c0x%x]", p->anal->reg->name[R_REG_NAME_BP], sign, bparg->delta);
 		if (strstr (tstr, oldstr) != NULL) {
 			tstr = r_str_replace (tstr, oldstr, newstr, 1);
 			break;
@@ -395,7 +413,7 @@ static bool varsub (RParse *p, RAnalFunction *f, ut64 addr, int oplen, char *dat
 
 	char bp[32];
 	if (p->anal->reg->name[R_REG_NAME_BP]) {
-		strncpy (bp, p->anal->reg->name[R_REG_NAME_BP], sizeof (bp) -1);
+		strncpy (bp, p->anal->reg->name[R_REG_NAME_BP], sizeof (bp) - 1);
 		if (isupper (*str)) {
 			r_str_case (bp, true);
 		}

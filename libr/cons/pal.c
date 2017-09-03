@@ -64,6 +64,7 @@ R_API void r_cons_pal_init (const char *foo) {
 	cons->pal.gui_background = Color_BLACK;
 	cons->pal.gui_alt_background = Color_WHITE;
 	cons->pal.gui_border = Color_BLACK;
+	cons->pal.highlight = Color_BGRED;
 
 	cons->pal.graph_box = Color_RESET;
 	cons->pal.graph_box2 = Color_BLUE;
@@ -102,7 +103,7 @@ struct {
 	{ "magenta",  Color_MAGENTA,  Color_BGMAGENTA },
 	{ "bmagenta", Color_BMAGENTA, Color_BGMAGENTA },
 	{ "yellow",   Color_YELLOW,   Color_BGYELLOW },
-	{ "byellow",  Color_BYELLOW,  Color_BGYELLOW },
+	{ "byellow",  Color_BYELLOW,  Color_BGBYELLOW },
 	{ "cyan",     Color_CYAN,     Color_BGCYAN },
 	{ "bcyan",    Color_BCYAN,    Color_BGCYAN },
 	{ "blue",     Color_BLUE,     Color_BGBLUE },
@@ -276,6 +277,7 @@ static struct {
 	{ "gui.background", r_offsetof (RConsPalette, gui_background) },
 	{ "gui.alt_background", r_offsetof (RConsPalette, gui_alt_background) },
 	{ "gui.border", r_offsetof (RConsPalette, gui_border) },
+	{ "highlight", r_offsetof (RConsPalette, highlight) },
 	{ NULL, 0 }
 };
 
@@ -542,7 +544,7 @@ R_API void r_cons_rainbow_free() {
 	R_FREE (cons->pal.rainbow);
 }
 
-R_API const char *r_cons_rainbow_get(int idx, int last, bool bg) {
+R_API char *r_cons_rainbow_get(int idx, int last, bool bg) {
 	RCons *cons = r_cons_singleton ();
 	if (last < 0) {
 		last = cons->pal.rainbow_sz;
@@ -555,7 +557,7 @@ R_API const char *r_cons_rainbow_get(int idx, int last, bool bg) {
 	const char *a = cons->pal.rainbow[x];
 	if (bg) {
 		char *dup = r_str_newf ("%s %s", a, a);
-		const char *res = r_cons_pal_parse (dup);
+		char *res = r_cons_pal_parse (dup);
 		free (dup);
 		return res;
 	}

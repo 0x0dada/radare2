@@ -1,4 +1,4 @@
-/* radare - LGPL - Copyright 2007-2016 - pancake */
+/* radare - LGPL - Copyright 2007-2017 - pancake */
 
 #include <r_flag.h>
 #include <r_util.h>
@@ -7,20 +7,18 @@
 
 R_LIB_VERSION(r_flag);
 
-#define STROFF(x) sdb_fmt (2, "flg.%"PFMT64x, x)
-
 #define ISNULLSTR(x) (!(x) || !*(x))
 #define IS_IN_SPACE(f, i) ((f)->space_idx != -1 && (i)->space != (f)->space_idx)
 
 static const char *str_callback(RNum *user, ut64 off, int *ok) {
-	RList *list;
+	const RList *list;
 	RFlag *f = (RFlag*)user;
 	RFlagItem *item;
 	if (ok) {
 		*ok = 0;
 	}
 	if (f) {
-		list = ht_find (f->ht_off, STROFF (off), NULL);
+		list = r_flag_get_list (f, off);
 		item = r_list_get_top (list);
 		if (item) {
 			if (ok) {
@@ -38,12 +36,19 @@ static void flag_free_kv(HtKv *kv) {
 	free (kv);
 }
 
-static void item_list_kv_free(HtKv *kv) {
-	free (kv->key);
-	r_list_free (kv->value);
-	free (kv);
+static void flag_skiplist_free(void *data) {
+	RFlagsAtOffset *item = (RFlagsAtOffset *)data;
+	r_list_free (item->flags);
+	free (data);
 }
 
+static int flag_skiplist_cmp(const void *va, const void *vb) {
+	const RFlagsAtOffset *a = (RFlagsAtOffset *)va, *b = (RFlagsAtOffset *)vb;
+	if (a->off == b->off) {
+		return 0;
+	}
+	return a->off < b->off ? -1 : 1;
+}
 
 static ut64 num_callback(RNum *user, const char *name, int *ok) {
 	RFlag *f = (RFlag*)user;
@@ -65,12 +70,31 @@ static ut64 num_callback(RNum *user, const char *name, int *ok) {
 	return 0LL;
 }
 
+/* return the list of flag at the nearest position.
+	dir == -1 -> result <= off
+	dir == 0 ->  result == off
+	dir == 1 ->  result >= off*/
+static  RFlagsAtOffset* r_flag_get_nearest_list(RFlag *f, ut64 off, int dir) {
+	RFlagsAtOffset *flags = NULL;
+	RFlagsAtOffset key;
+	key.off = off;
+	if (dir >= 0) {
+		flags = r_skiplist_get_geq (f->by_off, &key);
+	} else {
+		flags = r_skiplist_get_leq (f->by_off, &key);
+	}
+	if (dir == 0 && flags && flags->off != off) {
+		return NULL;
+	}
+	return flags;
+}
+
 static void remove_offsetmap(RFlag *f, RFlagItem *item) {
-	RList *fs_off = ht_find (f->ht_off, STROFF (item->offset), NULL);
-	if (fs_off) {
-		r_list_delete_data (fs_off, item);
-		if (r_list_empty (fs_off)) {
-			ht_delete (f->ht_off, STROFF (item->offset));
+	RFlagsAtOffset *flags = r_flag_get_nearest_list (f, item->offset, 0);
+	if (flags) {
+		r_list_delete_data (flags->flags, item);
+		if (r_list_empty (flags->flags)) {
+			r_skiplist_delete (f->by_off, flags);
 		}
 	}
 }
@@ -86,7 +110,7 @@ static int set_name(RFlagItem *item, const char *name) {
 	r_str_chop (item->name);
 	r_name_filter (item->name, 0); // TODO: name_filter should be chopping already
 	free (item->realname);
-	item->realname = strdup (item->name);
+	item->realname = item->name;
 	return true;
 }
 
@@ -119,7 +143,7 @@ R_API RFlag * r_flag_new() {
 		return NULL;
 	}
 	f->ht_name = ht_new (NULL, flag_free_kv, NULL);
-	f->ht_off = ht_new (NULL, item_list_kv_free, NULL);
+	f->by_off = r_skiplist_new (flag_skiplist_free, flag_skiplist_cmp);
 #if R_FLAG_ZONE_USE_SDB
 	sdb_free (f->zones);
 #else
@@ -138,10 +162,10 @@ R_API void r_flag_item_free(RFlagItem *item) {
 		free (item->alias);
 		/* release only one of the two pointers if they are the same */
 		if (item->name != item->realname) {
-			free (item->name); 
+			free (item->name);
 		}
 		free (item->realname);
-		R_FREE (item);
+		free (item);
 	}
 }
 
@@ -150,8 +174,9 @@ R_API RFlag *r_flag_free(RFlag *f) {
 	for (i = 0; i < R_FLAG_SPACES_MAX; i++) {
 		free (f->spaces[i]);
 	}
-	ht_free (f->ht_off);
+	r_skiplist_free (f->by_off);
 	ht_free (f->ht_name);
+
 	r_list_free (f->flags);
 	r_list_free (f->spacestack);
 	r_num_free (f->num);
@@ -297,7 +322,7 @@ R_API bool r_flag_exist_at(RFlag *f, const char *flag_prefix, ut16 fp_size, ut64
 	if (!f) {
 		return false;
 	}
-	RList *list = ht_find (f->ht_off, STROFF (off), NULL);
+	const RList *list = r_flag_get_list (f, off);
 	if (!list) {
 		return false;
 	}
@@ -322,11 +347,11 @@ R_API RFlagItem *r_flag_get(RFlag *f, const char *name) {
 
 /* return the first flag item that can be found at offset "off", or NULL otherwise */
 R_API RFlagItem *r_flag_get_i(RFlag *f, ut64 off) {
-	RList *list;
+	const RList *list;
 	if (!f) {
 		return NULL;
 	}
-	list = ht_find (f->ht_off, STROFF (off), NULL);
+	list = r_flag_get_list (f, off);
 	return list ? evalFlag (f, r_list_get_top (list)) : NULL;
 }
 
@@ -337,7 +362,7 @@ R_API RFlagItem *r_flag_get_i(RFlag *f, ut64 off) {
 R_API RFlagItem *r_flag_get_i2(RFlag *f, ut64 off) {
 	RFlagItem *oitem = NULL, *item = NULL;
 	RListIter *iter;
-	RList *list = ht_find (f->ht_off, STROFF (off), NULL);
+	const RList *list = r_flag_get_list (f, off);
 	if (!list) {
 		return NULL;
 	}
@@ -370,23 +395,58 @@ R_API RFlagItem *r_flag_get_i2(RFlag *f, ut64 off) {
 	return evalFlag (f, oitem);
 }
 
+static bool isFunctionFlag(const char *n) {
+	return (!strncmp (n, "sym.func.", 9)
+	|| !strncmp (n, "method.", 7)
+	|| !strncmp (n, "sym.", 7)
+	|| !strncmp (n, "func.", 5)
+	|| !strncmp (n, "fcn.0", 5));
+}
+
 /* returns the last flag item defined before or at the given offset.
  * NULL is returned if such a item is not found. */
 R_API RFlagItem *r_flag_get_at(RFlag *f, ut64 off, bool closest) {
 	RFlagItem *item, *nice = NULL;
 	RListIter *iter;
-
-	r_list_foreach (f->flags, iter, item) {
-		if (f->space_strict && IS_IN_SPACE (f, item)) {
-			continue;
-		}
-		if (item->offset == off) {
-			return evalFlag (f, item);
-		}
-		if (closest && off > item->offset) {
-			if (!nice || nice->offset < item->offset) {
+	const RFlagsAtOffset *flags_at = r_flag_get_nearest_list (f, off, -1);
+	if (!flags_at) {
+		return NULL;
+	}
+	if (flags_at->off == off) {
+		r_list_foreach (flags_at->flags, iter, item) {
+			if (f->space_idx != -1 && item->space != f->space_idx) {
+				continue;
+			}
+			if (nice) {
+				if (isFunctionFlag (nice->name)) {
+					nice = item;
+				}
+			} else {
 				nice = item;
 			}
+		}
+		return nice;
+	}
+
+	if (!closest) {
+		return NULL;
+	}
+	while (!nice && flags_at) {
+		r_list_foreach (flags_at->flags, iter, item) {
+			if (f->space_strict && IS_IN_SPACE (f, item)) {
+				continue;
+			}
+			if (item->offset == off) {
+				eprintf ("XXX Should never happend\n");
+				return evalFlag (f, item);
+			}
+			nice = item;
+			break;
+		}
+		if (flags_at->off) {
+			flags_at = r_flag_get_nearest_list (f, flags_at->off - 1, -1);
+		} else {
+			flags_at = NULL;
 		}
 	}
 	return evalFlag (f, nice);
@@ -394,7 +454,8 @@ R_API RFlagItem *r_flag_get_at(RFlag *f, ut64 off, bool closest) {
 
 /* return the list of flag items that are associated with a given offset */
 R_API const RList* /*<RFlagItem*>*/ r_flag_get_list(RFlag *f, ut64 off) {
-	return ht_find (f->ht_off, STROFF (off), NULL);
+	const RFlagsAtOffset *item = r_flag_get_nearest_list (f, off, 0);
+	return item ? item->flags : NULL;
 }
 
 R_API char *r_flag_get_liststr(RFlag *f, ut64 off) {
@@ -453,7 +514,7 @@ R_API RFlagItem *r_flag_set(RFlag *f, const char *name, ut64 off, ut32 size) {
 		}
 		if (!set_name (item, name)) {
 			eprintf ("Invalid flag name '%s'.\n", name);
-			free (item);
+			r_flag_item_free (item);
 			return NULL;
 		}
 		//item share ownership prone to uaf, that is why only
@@ -466,10 +527,15 @@ R_API RFlagItem *r_flag_set(RFlag *f, const char *name, ut64 off, ut32 size) {
 	item->offset = off + f->base;
 	item->size = size;
 
-	list = ht_find (f->ht_off, STROFF (off), NULL);
+	list = (RList *)r_flag_get_list (f, off);
 	if (!list) {
+		RFlagsAtOffset *flagsAtOffset = R_NEW (RFlagsAtOffset);
 		list = r_list_new ();
-		ht_insert (f->ht_off, STROFF (off), list);
+		flagsAtOffset->flags = list;
+		flagsAtOffset->off = off;
+		// CID 1378268:  Resource leaks  (RESOURCE_LEAK)
+		// Ignoring storage allocated by "r_skiplist_insert(f->by_off, flagsAtOffset)" leaks it.
+		r_skiplist_insert (f->by_off, flagsAtOffset);
 	}
 	r_list_append (list, item);
 	return item;
@@ -494,7 +560,7 @@ R_API void r_flag_item_set_comment(RFlagItem *item, const char *comment) {
 /* add/replace/remove the realname of a flag item */
 R_API void r_flag_item_set_realname(RFlagItem *item, const char *realname) {
 	if (item) {
-		if (item->realname != item->name) {
+		if (item->name != item->realname) {
 			free (item->realname);
 		}
 		item->realname = ISNULLSTR (realname) ? NULL : strdup (realname);
@@ -504,33 +570,33 @@ R_API void r_flag_item_set_realname(RFlagItem *item, const char *realname) {
 /* change the name of a flag item, if the new name is available.
  * true is returned if everything works well, false otherwise */
 R_API int r_flag_rename(RFlag *f, RFlagItem *item, const char *name) {
-	RFlagItem *p;
 	if (!f || !item || !name || !*name) {
 		return false;
 	}
-	p = ht_find (f->ht_name, name, NULL);
-	if (p) {
-		return false;
-	}
+#if 0
+	ut64 off = item->offset;
+	int size = item->size;
+	r_flag_unset (f, item);
+	r_flag_set (f, name, off, size);
+	return true;
+#else
+	ht_delete (f->ht_name, item->name);
 	if (!set_name (item, name)) {
 		return false;
 	}
-	ht_delete (f->ht_name, name);
 	ht_insert (f->ht_name, item->name, item);
+#endif
 	return true;
 }
 
 /* unset the given flag item.
  * returns true if the item is successfully unset, false otherwise.
  *
- * NOTE: the item is not freed. */
+ * NOTE: the item is freed. */
 R_API int r_flag_unset(RFlag *f, RFlagItem *item) {
-	RListFree orig = f->flags->free;
 	remove_offsetmap (f, item);
 	ht_delete (f->ht_name, item->name);
-	f->flags->free = NULL;
 	r_list_delete_data (f->flags, item);
-	f->flags->free = orig;
 	return true;
 }
 
@@ -539,7 +605,6 @@ R_API int r_flag_unset(RFlag *f, RFlagItem *item) {
 R_API int r_flag_unset_off(RFlag *f, ut64 off) {
 	RFlagItem *item = r_flag_get_i (f, off);
 	if (item && r_flag_unset (f, item)) {
-		R_FREE (item);
 		return true;
 	}
 	return false;
@@ -557,7 +622,6 @@ R_API int r_flag_unset_glob(RFlag *f, const char *glob) {
 		if (!glob || r_str_glob (flag->name, glob)) {
 			it.n = iter->n;
 			r_flag_unset (f, flag);
-			free (flag);
 			iter = &it;
 			n++;
 		}
@@ -569,11 +633,7 @@ R_API int r_flag_unset_glob(RFlag *f, const char *glob) {
  * returns true if the item is found and unset, false otherwise. */
 R_API int r_flag_unset_name(RFlag *f, const char *name) {
 	RFlagItem *item = ht_find (f->ht_name, name, NULL);
-	if (item && r_flag_unset (f, item)) {
-		R_FREE (item);
-		return true;
-	}
-	return false;
+	return item && r_flag_unset (f, item);
 }
 
 /* unset all flag items in the RFlag f */
@@ -587,8 +647,7 @@ R_API void r_flag_unset_all(RFlag *f) {
 	ht_free (f->ht_name);
 	//don't set free since f->flags will free up items when needed avoiding uaf
 	f->ht_name = ht_new (NULL, flag_free_kv, NULL);
-	ht_free (f->ht_off);
-	f->ht_off = ht_new (NULL, item_list_kv_free, NULL);
+	r_skiplist_purge (f->by_off);
 	r_flag_space_unset (f, NULL);
 }
 

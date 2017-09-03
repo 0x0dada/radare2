@@ -15,13 +15,9 @@ files=[
 'xxhash.c'
 ]
 
-r_hash = shared_library('r_hash', files,
-  include_directories: include_directories([
-  '../include'],
-  platform_librinc
-  ),
+r_hash = library('r_hash', files,
+  include_directories: [platform_inc],
   dependencies: [mth],
   link_with: [r_util],
   install: true
 )
-

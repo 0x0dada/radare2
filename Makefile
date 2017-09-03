@@ -1,9 +1,10 @@
 -include config-user.mk
 include global.mk
 
-PREVIOUS_RELEASE=1.4.0
+PREVIOUS_RELEASE=1.6.0
 
 MESON?=meson
+PYTHON?=python
 R2R=radare2-regressions
 R2R_URL=$(shell doc/repo REGRESSIONS)
 R2BINS=$(shell cd binr ; echo r*2 r2agent r2pm r2-indent)
@@ -57,6 +58,7 @@ all: plugins.cfg libr/include/r_version.h
 #.PHONY: libr/include/r_version.h
 GIT_TAP=$(shell git describe --tags --match "[0-9]*" 2>/dev/null || echo $(VERSION))
 GIT_TIP=$(shell git rev-parse HEAD 2>/dev/null || echo HEAD)
+R2_VER=$(shell grep VERSION configure.acr | head -n1 | awk '{print $$2}')
 ifndef SOURCE_DATE_EPOCH
 GIT_NOW=$(shell date +%Y-%m-%d)
 else
@@ -68,6 +70,7 @@ libr/include/r_version.h:
 	@echo $(Q)#ifndef R_VERSION_H$(Q) > $@.tmp
 	@echo $(Q)#define R_VERSION_H 1$(Q) >> $@.tmp
 	@echo $(Q)#define R2_VERSION_COMMIT $(R2VC)$(Q) >> $@.tmp
+	@echo $(Q)#define R2_VERSION $(ESC)"$(R2_VER)$(ESC)"$(Q) >> $@.tmp
 	@echo $(Q)#define R2_GITTAP $(ESC)"$(GIT_TAP)$(ESC)"$(Q) >> $@.tmp
 	@echo $(Q)#define R2_GITTIP $(ESC)"$(GIT_TIP)$(ESC)"$(Q) >> $@.tmp
 	@echo $(Q)#define R2_BIRTH $(ESC)"$(GIT_NOW)$(BUILDSEC)$(ESC)"$(Q) >> $@.tmp
@@ -189,7 +192,9 @@ install-man-symlink:
 
 install-doc:
 	${INSTALL_DIR} "${DESTDIR}${DOCDIR}"
-	for FILE in doc/* ; do ${INSTALL_DATA} $$FILE "${DESTDIR}${DOCDIR}" ; done
+	for FILE in doc/* ; do \
+		[ -f $$FILE ] && ${INSTALL_DATA} $$FILE "${DESTDIR}${DOCDIR}" || true ; \
+	done
 
 install-doc-symlink:
 	${INSTALL_DIR} "${DESTDIR}${DOCDIR}"
@@ -241,16 +246,17 @@ install-pkgconfig-symlink:
 	cd pkgcfg ; for FILE in *.pc ; do \
 		ln -fs "$${PWD}/$$FILE" "${DESTDIR}${LIBDIR}/pkgconfig/$$FILE" ; done
 
-
-symstall install-symlink: install-man-symlink install-doc-symlink install-pkgconfig-symlink symstall-www
-	cd libr && ${MAKE} install-symlink
-	cd binr && ${MAKE} install-symlink
-	cd shlr && ${MAKE} install-symlink
+symstall-sdb:
 	for DIR in ${DATADIRS} ; do (\
 		cd "$$DIR" ; \
 		echo "$$DIR" ; \
 		${MAKE} install-symlink ); \
 	done
+
+symstall install-symlink: install-man-symlink install-doc-symlink install-pkgconfig-symlink symstall-www symstall-sdb
+	cd libr && ${MAKE} install-symlink
+	cd binr && ${MAKE} install-symlink
+	cd shlr && ${MAKE} install-symlink
 	mkdir -p "${DESTDIR}${BINDIR}"
 	ln -fs "${PWD}/sys/indent.sh" "${DESTDIR}${BINDIR}/r2-indent"
 	ln -fs "${PWD}/sys/r2-docker.sh" "${DESTDIR}${BINDIR}/r2-docker"
@@ -301,6 +307,9 @@ purge-dev:
 	rm -rf "${DESTDIR}${INCLUDEDIR}/libr"
 	rm -f "${DESTDIR}${LIBDIR}/radare2/${VERSION}/-"*
 
+# required for EXT_SO
+include libr/config.mk
+
 strip:
 	-for FILE in ${R2BINS} ; do ${STRIP} -s "${DESTDIR}${BINDIR}/$$FILE" 2> /dev/null ; done
 	-for FILE in "${DESTDIR}${LIBDIR}/libr_"*".${EXT_SO}" "${DESTDIR}${LIBDIR}/libr2.${EXT_SO}" ; do \
@@ -314,6 +323,7 @@ purge: purge-doc purge-dev user-uninstall
 	rm -f "${DESTDIR}${LIBDIR}/libr2.${EXT_SO}"
 	rm -rf "${DESTDIR}${LIBDIR}/radare2"
 	rm -rf "${DESTDIR}${INCLUDEDIR}/libr"
+	rm -rf "${DESTDIR}${DATADIR}/radare2"
 
 purge2:
 	$(MAKE) purge
@@ -389,21 +399,17 @@ pie:
 build:
 	$(MESON) --prefix="${PREFIX}" build
 
-meson-windows:
-	cp -f libr/config.mk.meson libr/config.mk
-	cp -f libr/config.h.meson libr/config.h
-
 meson-config meson-cfg meson-conf:
 	# TODO: this is wrong for each platform different plugins must be compiled
-	cp -f plugins.meson.cfg plugins.cfg
-	./configure --prefix="${PREFIX}"
-	$(MAKE) libr/include/r_version.h
-#	cp -f libr/config.mk libr/config.mk.meson
-#	cp -f libr/config.h libr/config.h.meson
-	cp -f shlr/spp/config.def.h shlr/spp/config.h
+	#cp -f plugins.meson.cfg plugins.cfg
+	#./configure --prefix="${PREFIX}"
+	echo TODO
 
 meson: build
+	@echo "[ SDB Build ]"
+	$(PYTHON) sys/meson_sdb.py
 	cmp plugins.meson.cfg plugins.cfg || $(MAKE) meson-config
+	@echo "[ Ninja Build ]"
 	ninja -C build
 
 meson-install:
@@ -412,7 +418,7 @@ meson-install:
 B=$(DESTDIR)$(BINDIR)
 L=$(DESTDIR)$(LIBDIR)
 
-meson-symstall:
+meson-symstall: symstall-sdb
 	ln -fs $(PWD)/binr/r2pm/r2pm  ${B}/r2pm
 	ln -fs $(PWD)/build/binr/rasm2/rasm2 ${B}/rasm2
 	ln -fs $(PWD)/build/binr/rarun2/rarun2 ${B}/rarun2
@@ -422,25 +428,24 @@ meson-symstall:
 	ln -fs $(PWD)/build/binr/radare2/radare2 ${B}/radare2
 	ln -fs $(PWD)/build/binr/ragg2/ragg2 ${B}/ragg2
 	cd $(B) && ln -fs radare2 r2
-	ln -fs $(PWD)/build/libr/util/libr_util.$(SO_EXT) ${L}/libr_util.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/bp/libr_bp.$(SO_EXT) ${L}/libr_bp.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/syscall/libr_syscall.$(SO_EXT) ${L}/libr_syscall.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/cons/libr_cons.$(SO_EXT) ${L}/libr_cons.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/search/libr_search.$(SO_EXT) ${L}/libr_search.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/magic/libr_magic.$(SO_EXT) ${L}/libr_magic.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/flag/libr_flag.$(SO_EXT) ${L}/libr_flag.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/reg/libr_reg.$(SO_EXT) ${L}/libr_reg.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/bin/libr_bin.$(SO_EXT) ${L}/libr_bin.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/config/libr_config.$(SO_EXT) ${L}/libr_config.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/parse/libr_parse.$(SO_EXT) ${L}/libr_parse.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/lang/libr_lang.$(SO_EXT) ${L}/libr_lang.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/asm/libr_asm.$(SO_EXT) ${L}/libr_asm.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/anal/libr_anal.$(SO_EXT) ${L}/libr_anal.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/egg/libr_egg.$(SO_EXT) ${L}/libr_egg.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/fs/libr_fs.$(SO_EXT) ${L}/libr_fs.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/debug/libr_debug.$(SO_EXT) ${L}/libr_debug.$(SO_EXT)
-	ln -fs $(PWD)/build/libr/core/libr_core.$(SO_EXT) ${L}/libr_core.$(SO_EXT)
-	# TODO: missing libr/*/d .. no sdb binary is compiled to precompile those files
+	ln -fs $(PWD)/build/libr/util/libr_util.$(EXT_SO) ${L}/libr_util.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/bp/libr_bp.$(EXT_SO) ${L}/libr_bp.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/syscall/libr_syscall.$(EXT_SO) ${L}/libr_syscall.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/cons/libr_cons.$(EXT_SO) ${L}/libr_cons.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/search/libr_search.$(EXT_SO) ${L}/libr_search.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/magic/libr_magic.$(EXT_SO) ${L}/libr_magic.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/flag/libr_flag.$(EXT_SO) ${L}/libr_flag.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/reg/libr_reg.$(EXT_SO) ${L}/libr_reg.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/bin/libr_bin.$(EXT_SO) ${L}/libr_bin.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/config/libr_config.$(EXT_SO) ${L}/libr_config.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/parse/libr_parse.$(EXT_SO) ${L}/libr_parse.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/lang/libr_lang.$(EXT_SO) ${L}/libr_lang.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/asm/libr_asm.$(EXT_SO) ${L}/libr_asm.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/anal/libr_anal.$(EXT_SO) ${L}/libr_anal.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/egg/libr_egg.$(EXT_SO) ${L}/libr_egg.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/fs/libr_fs.$(EXT_SO) ${L}/libr_fs.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/debug/libr_debug.$(EXT_SO) ${L}/libr_debug.$(EXT_SO)
+	ln -fs $(PWD)/build/libr/core/libr_core.$(EXT_SO) ${L}/libr_core.$(EXT_SO)
 
 meson-uninstall:
 	$(MAKE) uninstall

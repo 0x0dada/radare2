@@ -16,24 +16,74 @@ static void libc_printf(const char *format, ...) {
 }
 static bool isInterrupted = false;
 
+R_API void r_print_portionbar(RPrint *p, const ut64 *portions, int n_portions) {
+	const int use_color = p->flags & R_PRINT_FLAGS_COLOR;
+	int i, j;
+	ut64 total = 0LL;
+	for (i = 0; i < n_portions; i++) {
+		ut64 sum = total + portions[i];
+		if (total > sum) {
+			eprintf ("portionbar overflow aborted\n");
+			return;
+		}
+		total = sum;
+	}
+	p->cb_printf ("[");
+	for (i = 0; i < n_portions; i++) {
+		int pc = portions[i] * 100 / total;
+		// adjust pc to screen columns
+		pc = pc * p->width / 100;
+		if (use_color) {
+			p->cb_printf ("\x1b[%dm", 31 + (i % 8));
+		}
+		if (pc == 0) {
+			pc = 1;
+		}
+		for (j = 0; j < pc; j++) {
+			p->cb_printf ("%c", 'A'+ i);
+		}
+		if (use_color) {
+			p->cb_printf (Color_RESET);
+		}
+	}
+	p->cb_printf ("]\n");
+}
+
 R_API void r_print_columns (RPrint *p, const ut8 *buf, int len, int height) {
 	int i, j, cols = 78;
 	int rows = height > 0 ? height : 10;
 	// int realrows = rows * 2;
-	p->cb_printf (" | ");
+	bool colors = p->flags & R_PRINT_FLAGS_COLOR;
+	if (colors) {
+		for (i = 0; i < rows; i++) {
+			int threshold = i * (0xff / rows);
+			for (j = 0; j < cols; j++) {
+				int realJ = j * len / cols;
+				if (255 - buf[realJ] < threshold || (i + 1 == rows)) {
+					p->cb_printf (Color_BGRED"_" Color_RESET);
+				} else {
+					p->cb_printf (" ");
+				}
+			}
+			p->cb_printf ("\n");
+		}
+		return;
+	}
+
 	for (i = 0; i<rows; i++) {
 		int threshold = i * (0xff / rows);
 		for (j = 0; j < cols; j++) {
-			int realJ = j * (len/cols);
-			if (buf[realJ] < threshold) {
-				p->cb_printf ("#");
+			int realJ = j * len / cols;
+			if (255 - buf[realJ] < threshold) {
+				p->cb_printf ("|");
+			} else if (i + 1 == rows) {
+				p->cb_printf ("_");
 			} else {
 				p->cb_printf (" ");
 			}
 		}
-		p->cb_printf ("\n | ");
+		p->cb_printf ("\n");
 	}
-	p->cb_printf ("\n");
 }
 
 R_API int r_util_lines_getline(ut64 *lines_cache, int lines_cache_sz, ut64 off) {
@@ -353,6 +403,13 @@ R_API void r_print_addr(RPrint *p, ut64 addr) {
 		if (use_color) {
 			const char *pre = PREOFF (offset): Color_GREEN;
 			const char *fin = Color_RESET;
+			if (p->flags & R_PRINT_FLAGS_RAINBOW) {
+				// pre = r_cons_rgb_str_off (rgbstr, addr);
+				if (p && p->cons && p->cons->rgbstr) {
+					char rgbstr[32];
+					pre = p->cons->rgbstr (rgbstr, addr);
+				}
+			}
 			if (dec) {
 				printfmt ("%s%s%" PFMT64d "%s%c", pre, white, addr, fin, ch);
 			} else {
@@ -494,181 +551,29 @@ R_API void r_print_byte(RPrint *p, const char *fmt, int idx, ut8 ch) {
 	r_print_cursor (p, idx, 0);
 }
 
-static const char* bits_to_c_code_fmtstr(int bits) {
-	switch (bits) {
-	case 16:
-		return "0x%04x";
-	case 32:
-		return "0x%08xU";
-	case 64:
-		return "0x%016" PFMT64x "ULL";
-	default:
-		return "0x%02x";
-	}
-}
-
-static void print_c_code(RPrint *p, ut64 addr, ut8 *buf, int len, int ws, int w) {
-	const char *fmtstr;
-	int i, bits;
-
-	ws = R_MAX (1, R_MIN (ws, 8));
-	bits = ws * 8;
-	fmtstr = bits_to_c_code_fmtstr (bits);
-	len /= ws;
-
-	p->cb_printf ("#define _BUFFER_SIZE %d\n", len);
-	p->cb_printf ("const uint%d_t buffer[%d] = {", bits, len);
-
-	p->interrupt = 0;
-
-	for (i = 0; !p->interrupt && i < len; i++) {
-		if (!(i % w)) {
-			p->cb_printf ("\n  ");
-		}
-		r_print_cursor (p, i, 1);
-		p->cb_printf (fmtstr, r_read_ble (buf, p->big_endian, bits));
-		if ((i + 1) < len) {
-			p->cb_printf (",");
-
-			if ((i + 1) % w) {
-				p->cb_printf (" ");
-			}
-		}
-		r_print_cursor (p, i, 0);
-		buf += ws;
-	}
-	p->cb_printf ("\n};\n");
-}
-
-R_API void r_print_code(RPrint *p, ut64 addr, ut8 *buf, int len, char lang) {
-	int i, w = p->cols * 0.7;
-	if (w < 1) {
-		w = 1;
-	}
-	switch (lang) {
-	case '?':
-		eprintf ("Valid print code formats are: JSON, C, Python, Cstring (pcj, pc, pcp, pcs) \n"
-		"  pc     C\n"
-		"  pc*    print 'wx' r2 commands\n"
-		"  pch    C half-words (2 byte)\n"
-		"  pcw    C words (4 byte)\n"
-		"  pcd    C dwords (8 byte)\n"
-		"  pca    GAS .byte blob\n"
-		"  pcA    .bytes with instructions in comments\n"
-		"  pcs    string\n"
-		"  pcS    shellscript that reconstructs the bin\n"
-		"  pcj    json\n"
-		"  pcJ    javascript\n"
-		"  pcp    python\n");
-		break;
-	case '*':
-		p->cb_printf ("wx ");
-		for (i = 0; !p->interrupt && i < len; i++) {
-			if (i && !(i % 16)) {
-				p->cb_printf (";s+16\nwx ");
-			}
-			p->cb_printf ("%02x", buf[i]);
-		}
-		if (i && !(i % 16)) {
-			p->cb_printf (";s+16\n");
-		} else {
-			p->cb_printf (";s+%d\n", (i % 16));
-		}
-		p->cb_printf ("s-%d\n", len);
-		break;
-	case 'A': // "pcA"
-		/* implemented in core because of disasm :( */
-		break;
-	case 'a': // "pca"
-		p->cb_printf ("shellcode:");
-		for (i = 0; !p->interrupt && i < len; i++) {
-			if (!(i % 8)) {
-				p->cb_printf ("\n.byte ");
-			} else {
-				p->cb_printf (", ");
-			}
-			p->cb_printf ("0x%02x", buf[i]);
-		}
-		p->cb_printf ("\n.equ shellcode_len, %d\n", len);
-		break;
-	case 's': // "pcs"
-		p->cb_printf ("\"");
-		for (i = 0; !p->interrupt && i < len; i++) {
-			p->cb_printf ("\\x%02x", buf[i]);
-		}
-		p->cb_printf ("\"\n");
-		break;
-	case 'S': // "pcS"
-	{
-		const int trunksize = 16;
-		for (i = 0; !p->interrupt && i < len; i++) {
-			if (!(i % trunksize)) {
-				p->cb_printf ("printf \"");
-			}
-			p->cb_printf ("\\%03o", buf[i]);
-			if ((i % trunksize) == (trunksize - 1)) {
-				p->cb_printf ("\" %s bin\n", (i <= trunksize)? ">": ">>");
-			}
-		}
-		if ((i % trunksize)) {
-			p->cb_printf ("\" %s bin\n", (i <= trunksize)? ">": ">>");
-		}
-	} break;
-	case 'J': {
-		char *out = malloc (len * 3);
-		p->cb_printf ("var buffer = new Buffer(\"");
-		out[0] = 0;
-		r_base64_encode (out, buf, len);
-		p->cb_printf ("%s", out);
-		p->cb_printf ("\", 'base64');\n");
-		free (out);
-	} break;
-	case 'j':
-		p->cb_printf ("[");
-		for (i = 0; !p->interrupt && i < len; i++) {
-			r_print_cursor (p, i, 1);
-			p->cb_printf ("%d%s", buf[i], (i + 1 < len)? ",": "");
-			r_print_cursor (p, i, 0);
-		}
-		p->cb_printf ("]\n");
-		break;
-	case 'P':
-	case 'p': // pcp"
-		p->cb_printf ("import struct\nbuf = struct.pack (\"%dB\", *[", len);
-		for (i = 0; !p->interrupt && i < len; i++) {
-			if (!(i % w)) {
-				p->cb_printf ("\n");
-			}
-			r_print_cursor (p, i, 1);
-			p->cb_printf ("0x%02x%s", buf[i], (i + 1 < len)? ",": "])");
-			r_print_cursor (p, i, 0);
-		}
-		p->cb_printf ("\n");
-		break;
-	case 'h':
-		print_c_code (p, addr, buf, len, 2, p->cols / 2); // 9
-		break;
-	case 'w':
-		print_c_code (p, addr, buf, len, 4, p->cols / 3); // 6);
-		break;
-	case 'd':
-		print_c_code (p, addr, buf, len, 8, p->cols / 5); //3);
-		break;
-	default:
-		print_c_code (p, addr, buf, len, 1, p->cols / 1.5); // 12);
-		break;
-	}
-}
-
 R_API int r_print_string(RPrint *p, ut64 seek, const ut8 *buf, int len, int options) {
 	int i;
 	bool wide = (options & R_PRINT_STRING_WIDE);
+	bool wide32 = (options & R_PRINT_STRING_WIDE32);
 	bool zeroend = (options & R_PRINT_STRING_ZEROEND);
 	bool wrap = (options & R_PRINT_STRING_WRAP);
 	bool urlencode = (options & R_PRINT_STRING_URLENCODE);
 	p->interrupt = 0;
 	int col = 0;
-	for (i = 0; !p->interrupt && i < len; i++) {
+	i = 0;
+	if (!urlencode && !wrap) {
+		while (buf[i] == '\0' && i < 3 && i < len) {
+			i++;
+		}
+	}
+	for (; !p->interrupt && i < len; i++) {
+		if (wide32) {
+			int j = i;
+			while (buf[j] == '\0' && j < (i + 3)) {
+				j++;
+			}
+			i = j;
+		}
 		if (zeroend && buf[i] == '\0') {
 			break;
 		}
@@ -799,8 +704,7 @@ R_API void r_print_set_screenbounds(RPrint *p, ut64 addr) {
 	}
 }
 
-// XXX: step is broken
-R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int base, int step) {
+R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int base, int step, int zoomsz) {
 	PrintfCallback printfmt = (PrintfCallback) printf;
 	int i, j, k, inc = 16;
 	int sparse_char = 0;
@@ -841,6 +745,9 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 	}
 	if (inc < 1) {
 		inc = 1;
+	}
+	if (zoomsz < 1) {
+		zoomsz = 1;
 	}
 	switch (base) {
 	case -10:
@@ -943,7 +850,7 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 				printfmt ("|");
 			}
 			/* print comment header*/
-			if (p->use_comments && !compact) {
+			if (p && p->use_comments && !compact) {
 				if (col != 2) {
 					printfmt (" ");
 				}
@@ -982,7 +889,7 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 			}
 		}
 		if (use_offset) {
-			r_print_addr (p, addr + j);
+			r_print_addr (p, addr + j * zoomsz);
 		}
 		if (use_hexa) {
 			if (!compact) {
@@ -997,7 +904,9 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 							printfmt (j % 2? "   ": "  ");
 						}
 					} else {
-						if (base == 10) {
+						if (base == 32) {
+							printfmt ((j%4)? "   ": "  ");
+						} else if (base == 10) {
 							printfmt (j % 2? "     ": "  ");
 						} else {
 							printfmt (j % 2? "   ": "  ");
@@ -1116,12 +1025,12 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 				}
 			}
 		}
-		if (p->use_comments) {
+		if (p && p->use_comments) {
 			for (; j < i + inc; j++) {
 				printfmt (" ");
 			}
 			for (j = i; j < i + inc; j++) {
-				const char *comment = p->get_comments (p->user, addr + j);
+				char *comment = p->get_comments (p->user, addr + j);
 				if (comment) {
 					if (p && p->colorfor) {
 						a = p->colorfor (p->user, addr + j, true);
@@ -1134,6 +1043,7 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 						a = b = "";
 					}
 					printfmt ("%s  ; %s", a, comment);
+					free (comment);
 				}
 			}
 		}
@@ -1194,6 +1104,7 @@ R_API void r_print_hexdiff(RPrint *p, ut64 aa, const ut8 *_a, ut64 ba, const ut8
 		return;
 	}
 	if (!((b = M (_b, len)))) {
+		free (a);
 		return;
 	}
 	for (i = 0; i < len; i += 16) {
@@ -1340,8 +1251,11 @@ R_API void r_print_progressbar(RPrint *p, int pc, int _cols) {
 		p = &staticp;
 	}
 	pc = R_MAX (0, R_MIN (100, pc));
-	p->cb_printf ("%4d%% [", pc);
+	if (p->flags & R_PRINT_FLAGS_HEADER) {
+		p->cb_printf ("%4d%% ", pc);
+	}
 	cols -= 15;
+	p->cb_printf ("[");
 	for (i = cols * pc / 100; i; i--) {
 		p->cb_printf ("#");
 	}
@@ -1384,12 +1298,11 @@ R_API void r_print_rangebar(RPrint *p, ut64 startA, ut64 endA, ut64 min, ut64 ma
 
 R_API void r_print_zoom(RPrint *p, void *user, RPrintZoomCallback cb, ut64 from, ut64 to, int len, int maxlen) {
 	static int mode = -1;
-	ut8 *bufz, *bufz2;
+	ut8 *bufz = NULL, *bufz2 = NULL;
 	int i, j = 0;
 	ut64 size = (to - from);
 	size = len? size / len: 0;
 
-	bufz = bufz2 = NULL;
 	if (maxlen < 2) {
 		maxlen = 1024 * 1024;
 	}
@@ -1435,13 +1348,16 @@ R_API void r_print_zoom(RPrint *p, void *user, RPrintZoomCallback cb, ut64 from,
 		p->zoom->size = size;
 	}
 	p->flags &= ~R_PRINT_FLAGS_HEADER;
-	r_print_hexdump (p, from, bufz, len, 16, size);
+	r_print_hexdump (p, from, bufz, len, 16, 1, size);
 	p->flags |= R_PRINT_FLAGS_HEADER;
 }
 
 R_API void r_print_fill(RPrint *p, const ut8 *arr, int size, ut64 addr, int step) {
-	const int show_colors = p->flags & R_PRINT_FLAGS_COLOR;
-	const char *firebow[6] = { NULL };
+	if (!p || !arr) {
+		return;
+	}
+	const bool show_colors = (p && (p->flags & R_PRINT_FLAGS_COLOR));
+	char *firebow[6];
 	int i = 0, j;
 
 	for (i = 0; i < 6; i++) {
@@ -1466,7 +1382,19 @@ R_API void r_print_fill(RPrint *p, const ut8 *arr, int size, ut64 addr, int step
 		ut8 next = (i + 1 < size)? arr[i + 1]: 0;
 		int base = 0;
 		if (addr != UT64_MAX && step > 0) {
-			p->cb_printf ("0x%08" PFMT64x " ", addr + (i * step));
+			ut64 at = addr + (i * step);
+			if (p->cur_enabled) {
+				if (i == p->cur) {
+					p->cb_printf (Color_INVERT"> 0x%08" PFMT64x " "Color_RESET, at);
+					if (p->num) {
+						p->num->value = at;
+					}
+				} else {
+					p->cb_printf ("  0x%08" PFMT64x " ", at);
+				}
+			} else {
+				p->cb_printf ("0x%08" PFMT64x " ", at);
+			}
 			p->cb_printf ("%02x %04x |", i, arr[i]);
 		} else {
 			p->cb_printf ("|");
@@ -1508,6 +1436,9 @@ R_API void r_print_fill(RPrint *p, const ut8 *arr, int size, ut64 addr, int step
 			}
 		}
 		p->cb_printf ("\n");
+	}
+	for (i = 0; i < 6; i++) {
+		free (firebow[i]);
 	}
 }
 
@@ -1656,12 +1587,36 @@ R_API const char* r_print_color_op_type(RPrint *p, ut64 anal_type) {
 #define COLORIZE_BUFSIZE 1024
 static char o[COLORIZE_BUFSIZE];
 
-R_API char* r_print_colorize_opcode(RPrint *print, char *p, const char *reg, const char *num) {
+static bool issymbol(char c) {
+	switch (c) {
+	case '+':
+	case '-':
+	/* case '/': not good for dalvik */
+	case '>':
+	case '<':
+	case '(':
+	case ')':
+	case '*':
+	case '%':
+	case ']':
+	case '[':
+	case ',':
+	case ' ':
+	case '{':
+	case '}':
+		return true;
+	default:
+		return false;
+	}
+}
+
+R_API char* r_print_colorize_opcode(RPrint *print, char *p, const char *reg, const char *num, bool partial_reset) {
 	int i, j, k, is_mod, is_float = 0, is_arg = 0;
-	ut32 c_reset = strlen (Color_RESET);
+	char *reset = partial_reset ? Color_NOBGRESET:Color_RESET;
+	ut32 c_reset = strlen (reset);
 	int is_jmp = p && (*p == 'j' || ((*p == 'c') && (p[1] == 'a')))? 1: 0;
-	int is_num;
 	ut32 opcode_sz = p && *p? strlen (p) * 10 + 1: 0;
+	char previous = '\0';
 
 	if (!p || !*p) {
 		return NULL;
@@ -1677,6 +1632,16 @@ R_API char* r_print_colorize_opcode(RPrint *print, char *p, const char *reg, con
 	memset (o, 0, COLORIZE_BUFSIZE);
 	for (i = j = 0; p[i]; i++, j++) {
 		/* colorize numbers */
+		if ((p[i] == '0' && p[i+1] == 'x') || (isdigit (p[i]) && issymbol (previous))) {
+			int nlen = strlen (num);
+			if (nlen + j >= sizeof (o)) {
+				eprintf ("Colorize buffer is too small\n");
+				break;
+			}
+			memcpy (o + j, num, nlen + 1);
+			j += nlen;
+		}
+		previous = p[i];
 		if (j + 100 >= COLORIZE_BUFSIZE) {
 			eprintf ("r_print_colorize_opcode(): buffer overflow!\n");
 			return strdup (p);
@@ -1721,25 +1686,17 @@ R_API char* r_print_colorize_opcode(RPrint *print, char *p, const char *reg, con
 					eprintf ("r_print_colorize_opcode(): buffer overflow!\n");
 					return strdup (p);
 				}
-				strcpy (o + j, Color_RESET);
-				j += strlen (Color_RESET);
-				o[j++] = p[i];
-				if (p[i] == '$' || ((p[i] > '0') && (p[i] < '9'))) {
-					ut32 num_len = strlen (num);
-					if (num_len + j + 10 >= COLORIZE_BUFSIZE) {
-						eprintf ("r_print_colorize_opcode(): buffer overflow!\n");
-						return strdup (p);
-					}
-					strcpy (o + j, num);
-					j += strlen (num) - 1;
-				} else {
+				strcpy (o + j, reset);
+				j += strlen (reset);
+				o[j] = p[i];
+				if (!(p[i+1] == '$' || ((p[i+1] > '0') && (p[i+1] < '9')))) {
 					ut32 reg_len = strlen (reg);
 					if (reg_len + j + 10 >= COLORIZE_BUFSIZE) {
 						eprintf ("r_print_colorize_opcode(): buffer overflow!\n");
 						return strdup (p);
 					}
-					strcpy (o + j, reg);
-					j += strlen (reg) - 1;
+					strcpy (o + j + 1, reg);
+					j += strlen (reg);
 				}
 				continue;
 			}
@@ -1749,7 +1706,6 @@ R_API char* r_print_colorize_opcode(RPrint *print, char *p, const char *reg, con
 			// find if next ',' before ' ' is found
 			is_mod = 0;
 			is_float = 0;
-			is_num = 1;
 			for (k = i + 1; p[k]; k++) {
 				if (p[k] == 'e' && p[k + 1] == '+') {
 					is_float = 1;
@@ -1762,9 +1718,6 @@ R_API char* r_print_colorize_opcode(RPrint *print, char *p, const char *reg, con
 					is_mod = 1;
 					break;
 				}
-				if (!isdigit (p[k])) {
-					is_num = false;
-				}
 			}
 			if (is_float) {
 				strcpy (o + j, num);
@@ -1773,17 +1726,7 @@ R_API char* r_print_colorize_opcode(RPrint *print, char *p, const char *reg, con
 			if (!p[k]) {
 				is_mod = 1;
 			}
-			if (!is_jmp && is_mod) {
-				if (is_num) {
-					ut32 num_len = strlen (num);
-					if (num_len + j + 10 >= COLORIZE_BUFSIZE) {
-						eprintf ("r_print_colorize_opcode(): buffer overflow!\n");
-						return strdup (p);
-					}
-					strcpy (o + j, num);
-					j += strlen (num);
-					break;
-				}
+			if (is_mod) {
 				// COLOR FOR REGISTER
 				ut32 reg_len = strlen (reg);
 				/* if (reg_len+j+10 >= opcode_sz) o = realloc_color_buffer (o, &opcode_sz, reg_len+100); */
@@ -1796,15 +1739,16 @@ R_API char* r_print_colorize_opcode(RPrint *print, char *p, const char *reg, con
 			}
 			break;
 		case '0': /* address */
-			if (!is_jmp && p[i + 1] == 'x') {
-				ut32 num_len = strlen (num);
-				/* if (num_len+j+10 >= opcode_sz) o = realloc_color_buffer (o, &opcode_sz, num_len+100); */
-				if (num_len + j + 10 >= COLORIZE_BUFSIZE) {
-					eprintf ("r_print_colorize_opcode(): buffer overflow!\n");
-					return strdup (p);
-				}
+			if (p[i + 1] == 'x') {
 				if (print->flags & R_PRINT_FLAGS_SECSUB) {
-					RIOSection *s = print->iob.section_vget (print->iob.io, r_num_get (NULL, p + i));
+					RIOSection *s = NULL;
+					SdbList *secs = print->iob.sections_vget (print->iob.io, r_num_get (NULL, p + i));
+					if (secs) {
+						s = (RIOSection *)ls_pop (secs);
+						secs->free = NULL;
+						ls_free (secs);
+						secs = NULL;
+					}
 					if (s) {
 						if (strlen (s->name) + j + 1 >= COLORIZE_BUFSIZE) {
 							eprintf ("stop before overflow\n");
@@ -1816,8 +1760,6 @@ R_API char* r_print_colorize_opcode(RPrint *print, char *p, const char *reg, con
 						j++;
 					}
 				}
-				strcpy (o + j, num);
-				j += strlen (num);
 			}
 			break;
 		}
@@ -1831,7 +1773,7 @@ R_API char* r_print_colorize_opcode(RPrint *print, char *p, const char *reg, con
 		opcode_sz += 21;
 		/* free (t_o); */
 	}
-	strcpy (o + j, Color_RESET);
+	strcpy (o + j, reset);
 	//strcpy (p, o); // may overflow .. but shouldnt because asm.buf_asm is big enought
 	return strdup (o);
 }

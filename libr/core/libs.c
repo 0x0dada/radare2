@@ -1,7 +1,7 @@
-/* radare - LGPL - Copyright 2009-2016 - pancake */
+/* radare - LGPL - Copyright 2009-2017 - pancake */
 
 #include "r_core.h"
-#include "../config.h"
+#include "config.h"
 
 #define CB(x, y)\
 	static int __lib_ ## x ## _cb (RLibPlugin * pl, void *user, void *data) {\
@@ -101,6 +101,21 @@ R_API int r_core_loadlibs(RCore *core, int where, const char *path) {
 #endif
 	}
 #endif
+	// load script plugins
+	char *homeplugindir = r_str_home (R2_HOMEDIR "/plugins");
+        RList *files = r_sys_dir (homeplugindir);
+	RListIter *iter;
+	char *file;
+	r_list_foreach (files, iter, file) {
+		bool isScript = r_str_endswith (file, ".py") || r_str_endswith (file, ".js") || r_str_endswith (file, ".lua");
+		if (isScript) {
+			// eprintf ("-> %s\n", file);
+			r_core_cmdf (core, ". %s/%s", homeplugindir, file);
+		}
+	}
+	
+	free (homeplugindir);
 	core->times->loadlibs_time = r_sys_now () - prev;
+	r_list_free (files);
 	return true;
 }

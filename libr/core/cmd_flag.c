@@ -4,16 +4,98 @@
 #include "r_cons.h"
 #include "r_core.h"
 
+static const char *help_msg_f[] = {
+	"Usage: f","[?] [flagname]", " # Manage offset-name flags",
+	"f","","list flags (will only list flags from selected flagspaces)",
+	"f?","flagname","check if flag exists or not, See ?? and ?!",
+	"f."," [*[*]]","list local per-function flags (*) as r2 commands",
+	"f.","blah=$$+12","set local function label named 'blah'",
+	"f*","","list flags in r commands",
+	"f"," name 12 @ 33","set flag 'name' with length 12 at offset 33",
+	"f"," name = 33","alias for 'f name @ 33' or 'f name 1 33'",
+	"f"," name 12 33 [cmt]","same as above + optional comment",
+	"f-",".blah@fcn.foo","delete local label from function at current seek (also f.-)",
+	"f--","","delete all flags and flagspaces (deinit)",
+	"f+","name 12 @ 33","like above but creates new one if doesnt exist",
+	"f-","name","remove flag 'name'",
+	"f-","@addr","remove flag at address expression",
+	"f."," fname","list all local labels for the given function",
+	"f="," [glob]","list range bars graphics with flag offsets and sizes",
+	"fa"," [name] [alias]","alias a flag to evaluate an expression",
+	"fb"," [addr]","set base address for new flags",
+	"fb"," [addr] [flag*]","move flags matching 'flag' to relative addr",
+	"fc","[?][name] [color]","set color for given flag",
+	"fC"," [name] [cmt]","set comment for given flag",
+	"fd"," addr","return flag+delta",
+	"fe-","","resets the enumerator counter",
+	"fe"," [name]","create flag name.#num# enumerated flag. See fe?",
+	"fi"," [size] | [from] [to]","show flags in current block or range",
+	"fg","","bring visual mode to foreground",
+	"fj","","list flags in JSON format",
+	"fl"," (@[flag]) [size]","show or set flag length (size)",
+	"fla"," [glob]","automatically compute the size of all flags matching glob",
+	"fm"," addr","move flag at current offset to new address",
+	"fn","","list flags displaying the real name (demangled)",
+	"fo","","show fortunes",
+	//" fc [name] [cmt]  ; set execution command for a specific flag"
+	"fr"," [old] [[new]]","rename flag (if no new flag current seek one is used)",
+	"fR","[?] [f] [t] [m]","relocate all flags matching f&~m 'f'rom, 't'o, 'm'ask",
+	"fs","[?]+-*","manage flagspaces",
+	"fS","[on]","sort flags by offset or name",
+	"fV","[*-] [nkey] [offset]","dump/restore visual marks (mK/'K)",
+	"fx","[d]","show hexdump (or disasm) of flag:flagsize",
+	"fz","[?][name]","add named flag zone -name to delete. see fz?[name]",
+	NULL
+};
+
+static const char *help_msg_fc[] = {
+	"Usage: fc", "<flagname> [color]", " # List colors with 'ecs'",
+	"fc", " flagname", "Get current color for given flagname",
+	"fc", " flagname color", "Set color to a flag",
+	NULL
+};
+
+static const char *help_msg_fs[] = {
+	"Usage: fs","[*] [+-][flagspace|addr]", " # Manage flagspaces",
+	"fs","","display flagspaces",
+	"fs*","","display flagspaces as r2 commands",
+	"fsj","","display flagspaces in JSON",
+	"fs"," *","select all flagspaces",
+	"fs"," flagspace","select flagspace or create if it doesn't exist",
+	"fs","-flagspace","remove flagspace",
+	"fs","-*","remove all flagspaces",
+	"fs","+foo","push previous flagspace and set",
+	"fs","-","pop to the previous flagspace",
+	"fs","-.","remove the current flagspace",
+	"fsm"," [addr]","move flags at given address to the current flagspace",
+	"fss","","display flagspaces stack",
+	"fss*","","display flagspaces stack in r2 commands",
+	"fssj","","display flagspaces stack in JSON",
+	"fsr"," newname","rename selected flagspace",
+	NULL
+};
+
+static const char *help_msg_fz[] = {
+	"Usage: f", "[?|-name| name] [@addr]", " # Manage flagzones",
+	" fz", " math", "add new flagzone named 'math'",
+	" fz-", "math", "remove the math flagzone",
+	" fz-", "*", "remove all flagzones",
+	" fz.", "", "show around flagzone context",
+	" fz:", "", "show what's in scr.flagzone for visual",
+	" fz*", "", "dump into r2 commands, for projects",
+};
+
+static void cmd_flag_init(RCore *core) {
+	DEFINE_CMD_DESCRIPTOR (core, f);
+	DEFINE_CMD_DESCRIPTOR (core, fc);
+	DEFINE_CMD_DESCRIPTOR (core, fs);
+	DEFINE_CMD_DESCRIPTOR (core, fz);
+}
+
 static void cmd_fz(RCore *core, const char *input) {
 	switch (*input) {
 	case '?':
-		eprintf ("Usage: fz[?|-name| name] [@addr]\n");
-		eprintf (" fz math    add new flagzone named 'math'\n");
-		eprintf (" fz-math    remove the math flagzone\n");
-		eprintf (" fz-*       remove all flagzones\n");
-		eprintf (" fz.        show around flagzone context\n");
-		eprintf (" fz:        show what's in scr.flagzone for visual\n");
-		eprintf (" fz*        dump into r2 commands, for projects\n");
+		r_core_cmd_help (core, help_msg_fz);
 		break;
 	case '.':
 		{
@@ -240,32 +322,39 @@ rep:
 		r_flag_get_i2 (core->flags, r_num_math (core->num, input+1));
 		break;
 	case 'R': // "fR"
-		{
-		if (*str == '\0'){
+		switch(*str) {
+		case '\0':
 			eprintf ("Usage: fR [from] [to] ([mask])\n");
 			eprintf ("Example to relocate PIE flags on debugger:\n"
 				" > fR entry0 `dm~:1[1]`\n");
 			break;
-		}
-		char *p = strchr (str+1, ' ');
-		ut64 from, to, mask = 0xffff;
-		int ret;
-		if (p) {
-			char *q = strchr (p+1, ' ');
-			*p = 0;
-			if (q) {
-				*q = 0;
-				mask = r_num_math (core->num, q+1);
+		case '?':
+			r_cons_println ("Usage: fR [from] [to] ([mask])");
+			r_cons_println ("Example to relocate PIE flags on debugger:\n"
+				" > fR entry0 `dm~:1[1]`");
+			break;
+		default:
+            {
+				char *p = strchr (str+1, ' ');
+				ut64 from, to, mask = 0xffff;
+				int ret;
+				if (p) {
+					char *q = strchr (p+1, ' ');
+					*p = 0;
+					if (q) {
+						*q = 0;
+						mask = r_num_math (core->num, q+1);
+					}
+					from = r_num_math (core->num, str+1);
+					to = r_num_math (core->num, p+1);
+					ret = r_flag_relocate (core->flags, from, mask, to);
+					eprintf ("Relocated %d flags\n", ret);
+				} else {
+					eprintf ("Usage: fR [from] [to] ([mask])\n");
+					eprintf ("Example to relocate PIE flags on debugger:\n"
+						" > fR entry0 `dm~:1[1]`\n");
+				}
 			}
-			from = r_num_math (core->num, str+1);
-			to = r_num_math (core->num, p+1);
-			ret = r_flag_relocate (core->flags, from, mask, to);
-			eprintf ("Relocated %d flags\n", ret);
-		} else {
-			eprintf ("Usage: fR [from] [to] ([mask])\n");
-			eprintf ("Example to relocate PIE flags on debugger:\n"
-				" > fR entry0 `dm~:1[1]`\n");
-		}
 		}
 		break;
 	case 'b': // "fb"
@@ -500,27 +589,7 @@ rep:
 	case 's':
 		switch (input[1]) {
 		case '?':
-			{
-			const char *help_msg[] = {
-			"Usage: fs","[*] [+-][flagspace|addr]", " # Manage flagspaces",
-			"fs","","display flagspaces",
-			"fs*","","display flagspaces as r2 commands",
-			"fsj","","display flagspaces in JSON",
-			"fs"," *","select all flagspaces",
-			"fs"," flagspace","select flagspace or create if it doesn't exist",
-			"fs","-flagspace","remove flagspace",
-			"fs","-*","remove all flagspaces",
-			"fs","+foo","push previous flagspace and set",
-			"fs","-","pop to the previous flagspace",
-			"fs","-.","remove the current flagspace",
-			"fsm"," [addr]","move flags at given address to the current flagspace",
-			"fss","","display flagspaces stack",
-			"fssj","","display flagspaces stack in JSON",
-			"fss*","","display flagspaces stack in r2 commands",
-			"fsr"," newname","rename selected flagspace",
-			NULL};
-			r_core_cmd_help (core, help_msg);
-			}
+			r_core_cmd_help (core, help_msg_fs);
 			break;
 		case '+':
 			r_flag_space_push (core->flags, input+2);
@@ -592,13 +661,7 @@ rep:
 		break;
 	case 'c':
 		if (input[1]=='?' || input[1] != ' ') {
-			const char *help_msg[] = {
-			"Usage: fc", "<flagname> [color]", " # List colors with 'ecs'",
-			"fc", " flagname", "Get current color for given flagname",
-			"fc", " flagname color", "Set color to a flag",
-			NULL
-			};
-			r_core_cmd_help (core, help_msg);
+			r_core_cmd_help (core, help_msg_fc);
 		} else {
 			RFlagItem *fi;
 			const char *ret;
@@ -739,7 +802,6 @@ rep:
 					addr = r_num_math (core->num, input + 3);
 				}
 				break;
-				break;
 			default:
 				addr = r_num_math (core->num, input + 2);
 				break;
@@ -761,49 +823,7 @@ rep:
 		if (input[1]) {
 			core->num->value = r_flag_get (core->flags, input + 1)? 1: 0;
 		} else {
-		const char *help_msg[] = {
-		"Usage: f","[?] [flagname]", " # Manage offset-name flags",
-		"f","","list flags (will only list flags from selected flagspaces)",
-		"f?","flagname","check if flag exists or not, See ?? and ?!",
-		"f."," [*[*]]","list local per-function flags (*) as r2 commands",
-		"f.","blah=$$+12","set local function label named 'blah'",
-		"f*","","list flags in r commands",
-		"f"," name 12 @ 33","set flag 'name' with length 12 at offset 33",
-		"f"," name = 33","alias for 'f name @ 33' or 'f name 1 33'",
-		"f"," name 12 33 [cmt]","same as above + optional comment",
-		"f-",".blah@fcn.foo","delete local label from function at current seek (also f.-)",
-		"f--","","delete all flags and flagspaces (deinit)",
-		"f+","name 12 @ 33","like above but creates new one if doesnt exist",
-		"f-","name","remove flag 'name'",
-		"f-","@addr","remove flag at address expression",
-		"f."," fname","list all local labels for the given function",
-		"f="," [glob]","list range bars graphics with flag offsets and sizes",
-		"fa"," [name] [alias]","alias a flag to evaluate an expression",
-		"fb"," [addr]","set base address for new flags",
-		"fb"," [addr] [flag*]","move flags matching 'flag' to relative addr",
-		"fc","[?][name] [color]","set color for given flag",
-		"fC"," [name] [cmt]","set comment for given flag",
-		"fd"," addr","return flag+delta",
-		"fe-","","resets the enumerator counter",
-		"fe"," [name]","create flag name.#num# enumerated flag. See fe?",
-		"fi"," [size] | [from] [to]","show flags in current block or range",
-		"fg","","bring visual mode to foreground",
-		"fj","","list flags in JSON format",
-		"fl"," ([flag]) [size]","show or set flag length (size)",
-		"fla"," [glob]","automatically compute the size of all flags matching glob",
-		"fm"," addr","move flag at current offset to new address",
-		"fn","","list flags displaying the real name (demangled)",
-		"fo","","show fortunes",
-		//" fc [name] [cmt]  ; set execution command for a specific flag"
-		"fr"," [old] [[new]]","rename flag (if no new flag current seek one is used)",
-		"fR","[?] [f] [t] [m]","relocate all flags matching f&~m 'f'rom, 't'o, 'm'ask",
-		"fs","[?]+-*","manage flagspaces",
-		"fS","[on]","sort flags by offset or name",
-		"fV","[*-] [nkey] [offset]","dump/restore visual marks (mK/'K)",
-		"fx","[d]","show hexdump (or disasm) of flag:flagsize",
-		"fz","[?][name]","add named flag zone -name to delete. see fz?[name]",
-		NULL};
-		r_core_cmd_help (core, help_msg);
+		r_core_cmd_help (core, help_msg_f);
 		break;
 	}
 	}
@@ -811,4 +831,3 @@ rep:
 		free (str);
 	return 0;
 }
-

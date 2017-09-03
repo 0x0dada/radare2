@@ -19,8 +19,10 @@
 #define ELF_PAGE_MASK 0xFFFFFFFFFFFFF000LL
 #define ELF_PAGE_SIZE 12
 
-#define R_ELF_FULL_RELRO 2 
+#define R_ELF_NO_RELRO 0
 #define R_ELF_PART_RELRO 1
+#define R_ELF_FULL_RELRO 2
+
 #define bprintf if(bin->verbose)eprintf
 
 #define READ8(x, i) r_read_ble8(x + i); i += 1;
@@ -463,13 +465,13 @@ static int init_dynamic_section(struct Elf_(r_bin_elf_obj_t) *bin) {
 	r = Elf_(r_bin_elf_has_relro)(bin);
 	switch (r) {
 	case R_ELF_FULL_RELRO:
-		sdb_set (bin->kv, "elf.relro", "full relro", 0);
+		sdb_set (bin->kv, "elf.relro", "full", 0);
 		break;
 	case R_ELF_PART_RELRO:
-		sdb_set (bin->kv, "elf.relro", "partial relro", 0);
+		sdb_set (bin->kv, "elf.relro", "partial", 0);
 		break;
 	default:
-		sdb_set (bin->kv, "elf.relro", "no relro", 0);
+		sdb_set (bin->kv, "elf.relro", "no", 0);
 		break;
 	}
 	sdb_num_set (bin->kv, "elf_strtab.offset", strtabaddr, 0);
@@ -707,6 +709,9 @@ static Sdb *store_versioninfo_gnu_verdef(ELFOBJ *bin, Elf_(Shdr) *shdr, int sz) 
 		return false;
 	}
 	Elf_(Verdef) *defs = calloc (shdr->sh_size, sizeof (char));
+	if (!defs) {
+		return false;
+	}
 	if (bin->shstrtab && shdr->sh_name < bin->shstrtab_size) {
 		section_name = &bin->shstrtab[shdr->sh_name];
 	}
@@ -1045,7 +1050,7 @@ static int elf_init(ELFOBJ *bin) {
 	bin->strtab_section = NULL;
 	bin->dyn_buf = NULL;
 	bin->dynstr = NULL;
-	memset (bin->version_info, 0, DT_VERSIONTAGNUM);
+	ZERO_FILL (bin->version_info);
 
 	bin->g_sections = NULL;
 	bin->g_symbols = NULL;
@@ -1389,30 +1394,59 @@ out:
 
 int Elf_(r_bin_elf_has_nx)(ELFOBJ *bin) {
 	int i;
-	if (bin && bin->phdr)
-		for (i = 0; i < bin->ehdr.e_phnum; i++)
-			if (bin->phdr[i].p_type == PT_GNU_STACK)
+	if (bin && bin->phdr) {
+		for (i = 0; i < bin->ehdr.e_phnum; i++) {
+			if (bin->phdr[i].p_type == PT_GNU_STACK) {
 				return (!(bin->phdr[i].p_flags & 1))? 1: 0;
+			}
+		}
+	}
 	return 0;
 }
 
 int Elf_(r_bin_elf_has_relro)(ELFOBJ *bin) {
 	int i;
+	bool haveBindNow = false;
+	bool haveGnuRelro = false;
 	if (bin && bin->dyn_buf) {
 		for (i = 0; i < bin->dyn_entries; i++) {
-			if (bin->dyn_buf[i].d_tag == DT_BIND_NOW) {
-				return 2;
+			switch (bin->dyn_buf[i].d_tag) {
+			case DT_BIND_NOW:
+				haveBindNow = true;
+				break;
+			case DT_FLAGS:
+				for (i++; i < bin->dyn_entries ; i++) {
+					ut32 dTag = bin->dyn_buf[i].d_tag;
+					if (!dTag) {
+						break;
+					}
+					switch (dTag) {
+					case DT_FLAGS_1:
+						if (bin->dyn_buf[i].d_un.d_val & DF_1_NOW) {
+							haveBindNow = true;
+							break;
+						}
+					}
+				}
+				break;
 			}
 		}
 	}
 	if (bin && bin->phdr) {
 		for (i = 0; i < bin->ehdr.e_phnum; i++) {
 			if (bin->phdr[i].p_type == PT_GNU_RELRO) {
-				return 1;
+				haveGnuRelro = true;
+				break;
 			}
 		}
 	}
-	return 0;
+	if (haveGnuRelro) {
+		if (haveBindNow) {
+			return R_ELF_FULL_RELRO;
+		}
+		return R_ELF_PART_RELRO;
+	}
+	return R_ELF_NO_RELRO;
 }
 
 /*
@@ -1550,7 +1584,7 @@ ut64 Elf_(r_bin_elf_get_main_offset)(ELFOBJ *bin) {
 	ut8 buf[512];
 	if (!bin) {
 		return 0LL;
-	}	
+	}
 	if (entry > bin->size || (entry + sizeof (buf)) > bin->size) {
 		return 0;
 	}
@@ -1560,9 +1594,8 @@ ut64 Elf_(r_bin_elf_get_main_offset)(ELFOBJ *bin) {
 	}
 	// ARM64
 	if (buf[0x18+3] == 0x58 && buf[0x2f] == 0x00) {
-#define BUF_U32(i) ((ut32)(buf[i+0]+(buf[i+1]<<8)+(buf[i+2]<<16)+(buf[i+3]<<24)))
 		ut32 entry_vaddr = Elf_(r_bin_elf_p2v) (bin, entry);
-		ut32 main_addr = BUF_U32(0x30);
+		ut32 main_addr = r_read_le32 (&buf[0x30]);
 		if ((main_addr >> 16) == (entry_vaddr >> 16)) {
 			return Elf_(r_bin_elf_v2p) (bin, main_addr);
 		}
@@ -1611,27 +1644,21 @@ ut64 Elf_(r_bin_elf_get_main_offset)(ELFOBJ *bin) {
 		{
 			const ut64 gp = got_offset + 0x7ff0;
 			unsigned i;
-			#define BUF_U32(i) ((ut32)(buf[i+0]+(buf[i+1]<<8)+(buf[i+2]<<16)+(buf[i+3]<<24)))
-
 			for (i = 0; i < sizeof(buf) / sizeof(buf[0]); i += 4) {
-				const ut32 instr = BUF_U32(i);
+				const ut32 instr = r_read_le32 (&buf[i]);
 				if ((instr & 0xffff0000) == 0x8f840000) { // lw a0, offset(gp)
 					const short delta = instr & 0x0000ffff;
 					r_buf_read_at (bin->b, /* got_entry_offset = */ gp + delta, buf, 4);
-					return Elf_(r_bin_elf_v2p) (bin, BUF_U32(0));
+					return Elf_(r_bin_elf_v2p) (bin, r_read_le32 (&buf[0]));
 				}
 			}
-
-			#undef BUF_U32
 		}
 
 		return 0;
 	}
 	// ARM
 	if (!memcmp (buf, "\x24\xc0\x9f\xe5\x00\xb0\xa0\xe3", 8)) {
-		ut64 addr = (ut64)((int)(buf[48] +
-			(buf[48 + 1] << 8) + (buf[48 + 2] << 16) +
-			(buf[48 + 3] << 24)));
+		ut64 addr = r_read_le32 (&buf[48]);
 		return Elf_(r_bin_elf_v2p) (bin, addr);
 	}
 	// X86-CGC
@@ -1673,26 +1700,22 @@ ut64 Elf_(r_bin_elf_get_main_offset)(ELFOBJ *bin) {
 	// X86-NONPIE
 #if R_BIN_ELF64
 	if (!memcmp (buf, "\x49\x89\xd9", 3) && buf[156] == 0xe8) { // openbsd
-		return (ut64)((int)(buf[157 + 0] + (buf[157 + 1] << 8) +
-			(buf[157 + 2] << 16) + (buf[157 + 3] << 24))) +
-			entry + 156 + 5;
+		return r_read_le32 (&buf[157]) + entry + 156 + 5;
 	}
 	if (!memcmp (buf+29, "\x48\xc7\xc7", 3)) { // linux
-		ut64 addr = (ut64)((int)(buf[29 + 3] + (buf[29 + 4] << 8) +
-			(buf[29 + 5] << 16) + (buf[29 + 6] << 24))) ;
+		ut64 addr = (ut64)r_read_le32 (&buf[29 + 3]);
 		return Elf_(r_bin_elf_v2p) (bin, addr);
 	}
 #else
 	if (buf[23] == '\x68') {
-		ut64 addr = (ut64)((int)(buf[23 + 1] + (buf[23 + 2] << 8) +
-			(buf[23 + 3] << 16) + (buf[23 + 4] << 24)));
+		ut64 addr = (ut64)r_read_le32 (&buf[23 + 1]);
 		return Elf_(r_bin_elf_v2p) (bin, addr);
 	}
 #endif
 	/* linux64 pie main -- probably buggy in some cases */
 	if (buf[29] == 0x48 && buf[30] == 0x8d) { // lea rdi, qword [rip-0x21c4]
 		ut8 *p = buf + 32;
-		st32 maindelta = p[0] | p[1]<<8 | p[2]<<16 | p[3]<<24;
+		st32 maindelta = (st32)r_read_le32 (p);
 		ut64 vmain = (ut64)(entry + 29 + maindelta) + 7;
 		ut64 ventry = Elf_(r_bin_elf_p2v) (bin, entry);
 		if (vmain>>16 == ventry>>16) {
@@ -1796,6 +1819,8 @@ char* Elf_(r_bin_elf_get_arch)(ELFOBJ *bin) {
 	case EM_ARM:
 	case EM_AARCH64:
 		return strdup ("arm");
+	case EM_HEXAGON:
+		return strdup ("hexagon");
 	case EM_BLACKFIN:
 		return strdup ("blackfin");
 	case EM_SPARC:
@@ -1822,7 +1847,10 @@ char* Elf_(r_bin_elf_get_arch)(ELFOBJ *bin) {
 	case EM_VIDEOCORE3:
 	case EM_VIDEOCORE4:
 		return strdup ("vc4");
-	case EM_SH: return strdup ("sh");
+	case EM_SH:
+		return strdup ("sh");
+	case EM_V850:
+		return strdup ("v850");
 	default: return strdup ("x86");
 	}
 }
@@ -1928,14 +1956,13 @@ char* Elf_(r_bin_elf_get_file_type)(ELFOBJ *bin) {
 	case ET_DYN:  return strdup ("DYN (Shared object file)");
 	case ET_CORE: return strdup ("CORE (Core file)");
 	}
-
 	if ((e_type >= ET_LOPROC) && (e_type <= ET_HIPROC)) {
 		return r_str_newf ("Processor Specific: %x", e_type);
-	} else if ((e_type >= ET_LOOS) && (e_type <= ET_HIOS)) {
-		return r_str_newf ("OS Specific: %x", e_type);
-	} else {
-		return r_str_newf ("<unknown>: %x", e_type);
 	}
+	if ((e_type >= ET_LOOS) && (e_type <= ET_HIOS)) {
+		return r_str_newf ("OS Specific: %x", e_type);
+	}
+	return r_str_newf ("<unknown>: %x", e_type);
 }
 
 char* Elf_(r_bin_elf_get_elf_class)(ELFOBJ *bin) {
@@ -1951,6 +1978,41 @@ int Elf_(r_bin_elf_get_bits)(ELFOBJ *bin) {
 	/* Hack for ARCompact */
 	if (bin->ehdr.e_machine == EM_ARC_A5) {
 		return 16;
+	}
+	/* Hack for Ps2 */
+	if (bin->phdr && bin->ehdr.e_machine == EM_MIPS) {
+		const ut32 mipsType = bin->ehdr.e_flags & EF_MIPS_ARCH;
+		if (bin->ehdr.e_type == ET_EXEC) {
+			int i;
+			bool haveInterp = false;
+			for (i = 0; i < bin->ehdr.e_phnum; i++) {
+				if (bin->phdr[i].p_type == PT_INTERP) {
+					haveInterp = true;
+				}
+			}
+			if (!haveInterp && mipsType == EF_MIPS_ARCH_3) {
+				// Playstation2 Hack
+				return 64;
+			}
+		}
+		// TODO: show this specific asm.cpu somewhere in bininfo (mips1, mips2, mips3, mips32r2, ...)
+		switch (mipsType) {
+		case EF_MIPS_ARCH_1:
+		case EF_MIPS_ARCH_2:
+		case EF_MIPS_ARCH_3:
+		case EF_MIPS_ARCH_4:
+		case EF_MIPS_ARCH_5:
+		case EF_MIPS_ARCH_32:
+			return 32;
+		case EF_MIPS_ARCH_64:
+			return 64;
+		case EF_MIPS_ARCH_32R2:
+			return 32;
+		case EF_MIPS_ARCH_64R2:
+			return 64;
+			break;
+		}
+		return 32;
 	}
 	/* Hack for Thumb */
 	if (bin->ehdr.e_machine == EM_ARM) {
@@ -2357,6 +2419,7 @@ RBinElfSection* Elf_(r_bin_elf_get_sections)(ELFOBJ *bin) {
 		ret[i].flags = bin->shdr[i].sh_flags;
 		ret[i].link = bin->shdr[i].sh_link;
 		ret[i].info = bin->shdr[i].sh_info;
+		ret[i].type = bin->shdr[i].sh_type;
 		if (bin->ehdr.e_type == ET_REL)	{
 			ret[i].rva = bin->baddr + bin->shdr[i].sh_offset;
 		} else {
@@ -2397,6 +2460,7 @@ static void fill_symbol_bind_and_type (struct r_bin_elf_symbol_t *ret, Elf_(Sym)
 	switch (ELF_ST_BIND(sym->st_info)) {
 	case STB_LOCAL:  s_bind ("LOCAL"); break;
 	case STB_GLOBAL: s_bind ("GLOBAL"); break;
+	case STB_WEAK:   s_bind ("WEAK"); break;
 	case STB_NUM:    s_bind ("NUM"); break;
 	case STB_LOOS:   s_bind ("LOOS"); break;
 	case STB_HIOS:   s_bind ("HIOS"); break;
@@ -2637,7 +2701,7 @@ static int Elf_(fix_symbols)(ELFOBJ *bin, int nsym, int type, RBinElfSymbol **sy
 			/* find match in phdr */
 			p = phdr_symbols;
 			while (!p->last) {
-				if (d->offset == p->offset) {
+				if (p->offset && d->offset == p->offset) {
 					p->in_shdr = true;
 					if (*p->name && strcmp (d->name, p->name)) {
 						strcpy (d->name, p->name);

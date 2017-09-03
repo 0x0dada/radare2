@@ -3,6 +3,18 @@
 
 #include "r_str_util.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef enum {
+	R_STRING_ENC_LATIN1,
+	R_STRING_ENC_UTF8,
+	R_STRING_ENC_UTF16LE,
+	R_STRING_ENC_UTF32LE,
+	R_STRING_ENC_GUESS,
+} RStrEnc;
+
 typedef int (*RStrRangeCallback) (void *, int);
 
 static inline void r_str_rmch(char *s, char ch) {
@@ -25,6 +37,7 @@ R_API int r_str_write(int fd, const char *b);
 R_API void r_str_ncpy(char *dst, const char *src, int n);
 R_API void r_str_sanitize(char *c);
 R_API const char *r_str_casestr(const char *a, const char *b);
+R_API const char *r_str_firstbut(const char *s, char ch, const char *but);
 R_API const char *r_str_lastbut(const char *s, char ch, const char *but);
 R_API int r_str_split(char *str, char ch);
 R_API int *r_str_split_lines(char *str, int *count);
@@ -95,12 +108,16 @@ R_API int r_str_do_until_token(str_operation op, char *str, const char tok);
 R_API void r_str_const_free(void);
 R_API const char *r_str_const(const char *ptr);
 
+R_API void r_str_reverse(char *str);
 R_API int r_str_re_match(const char *str, const char *reg);
 R_API int r_str_re_replace(const char *str, const char *reg, const char *sub);
 R_API int r_str_unescape(char *buf);
 R_API char *r_str_escape(const char *buf);
 R_API char *r_str_escape_dot(const char *buf);
-R_API char *r_str_escape_all(const char *buf);
+R_API char *r_str_escape_latin1(const char *buf, bool show_asciidot);
+R_API char *r_str_escape_utf8(const char *buf, bool show_asciidot);
+R_API char *r_str_escape_utf16le(const char *buf, int buf_size, bool show_asciidot);
+R_API char *r_str_escape_utf32le(const char *buf, int buf_size, bool show_asciidot);
 R_API void r_str_uri_decode(char *buf);
 R_API char *r_str_uri_encode(const char *buf);
 R_API char *r_str_utf16_decode(const ut8 *s, int len);
@@ -129,5 +146,11 @@ R_API bool r_str_startswith(const char *str, const char *needle);
 R_API bool r_str_endswith(const char *str, const char *needle);
 R_API bool r_str_isnumber (const char *str);
 R_API const char *r_str_last (const char *in, const char *ch);
+R_API char* r_str_highlight(char *str, const char *word, const char *color);
+R_API char *r_qrcode_gen(const ut8* text, int len, bool utf8);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif //  R_STR_H

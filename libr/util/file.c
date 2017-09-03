@@ -9,15 +9,23 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <r_lib.h>
 #if __UNIX__
 #include <sys/mman.h>
+#include <limits.h>
 #endif
-#if __APPLE__
+#if __APPLE__ && __MAC_10_5
+#define HAVE_COPYFILE_H 1
+#else
+#define HAVE_COPYFILE_H 0
+#endif
+#if HAVE_COPYFILE_H
 #include <copyfile.h>
 #endif
 #if _MSC_VER
 #include <process.h>
 #endif
+
 R_API bool r_file_truncate (const char *filename, ut64 newsize) {
 	int fd;
 	if (r_file_is_directory (filename)) {
@@ -121,6 +129,14 @@ R_API bool r_file_exists(const char *str) {
 	if (!str || !*str) {
 		return false;
 	}
+#if 0
+	// TODO: file_exists doesnt uses the sandbox or many things may fail
+	if (strncmp (str, "/usr/bin", 8)) {
+		if (str && !r_sandbox_check_path (str)) {
+			return false;
+		}
+	}
+#endif
 #ifdef _MSC_VER
 	WIN32_FIND_DATAA FindFileData;
 	HANDLE handle = FindFirstFileA (str, &FindFileData);
@@ -173,6 +189,10 @@ R_API char *r_file_abspath(const char *file) {
 		if (cwd && *file != '/')
 			ret = r_str_newf ("%s"R_SYS_DIR"%s", cwd, file);
 #elif __WINDOWS__ && !__CYGWIN__
+		// Network path
+		if (!strncmp (file, "\\\\", 2)) {
+			return strdup (file);
+		}
 		if (cwd && !strchr (file, ':')) {
 			ret = r_str_newf ("%s\\%s", cwd, file);
 		}
@@ -183,15 +203,11 @@ R_API char *r_file_abspath(const char *file) {
 		ret = strdup (file);
 	}
 #if __UNIX__
-	{
-		char *resolved_path = calloc(4096, 1); // TODO: use MAXPATH
-		char *abspath = realpath (ret, resolved_path);
-		if (abspath) {
-			free (ret);
-			ret = abspath;
-		} else {
-			free (resolved_path);
-		}
+	char resolved_path[PATH_MAX] = {0};
+	char *abspath = realpath (ret, &resolved_path);
+	if (abspath) {
+		free (ret);
+		ret = strdup (abspath);
 	}
 #endif
 	return ret;
@@ -242,7 +258,8 @@ R_API char *r_stdin_slurp (int *sz) {
 		return NULL;
 	}
 	buf = malloc (BS);
-	if (!buf) {	
+	if (!buf) {
+		close (newfd);
 		return NULL;
 	}
 	for (i = ret = 0; ; i += ret) {
@@ -729,7 +746,7 @@ static RMmap *r_file_mmap_windows (RMmap *m, const char *file) {
 	m->fm = CreateFileMappingA (m->fh, NULL, PAGE_READONLY, 0, 0, NULL);
 		//m->rw?PAGE_READWRITE:PAGE_READONLY, 0, 0, NULL);
 	if (m->fm != INVALID_HANDLE_VALUE) {
-		m->buf = MapViewOfFile (m->fm, 
+		m->buf = MapViewOfFile (m->fm,
 			// m->rw?(FILE_MAP_READ|FILE_MAP_WRITE):FILE_MAP_READ,
 			FILE_MAP_COPY,
 			UT32_HI (m->base), UT32_LO (m->base), 0);
@@ -842,18 +859,17 @@ R_API char *r_file_temp (const char *prefix) {
 R_API int r_file_mkstemp(const char *prefix, char **oname) {
 	int h;
 	char *path = r_file_tmpdir ();
-	char name[1024];
+	char name[1024] = {0};
 #if __WINDOWS__
 	h = -1;
 	if (GetTempFileNameA (path, prefix, 0, name)) {
 		h = r_sandbox_open (name, O_RDWR|O_EXCL|O_BINARY, 0644);
 	}
 #else
-	mode_t mask;
-	snprintf (name, sizeof (name), "%s/%sXXXXXX", path, prefix);
-	mask = umask(S_IWGRP | S_IWOTH);
+	snprintf (name, sizeof (name) - 1, "%s/r2.%s.XXXXXX", path, prefix);
+	mode_t mask = umask (S_IWGRP | S_IWOTH);
 	h = mkstemp (name);
-	umask(mask);
+	umask (mask);
 #endif
 	if (oname) {
 		*oname = (h!=-1)? strdup (name): NULL;
@@ -864,9 +880,28 @@ R_API int r_file_mkstemp(const char *prefix, char **oname) {
 
 R_API char *r_file_tmpdir() {
 #if __WINDOWS__
-	char *path = r_sys_getenv ("TEMP");
-	if (!path) {
-		path = strdup ("C:\\WINDOWS\\Temp\\");
+	char tmpdir[MAX_PATH];
+	char *path = NULL;
+
+	if (GetTempPathA (sizeof (tmpdir), tmpdir) == 0) {
+		path = r_sys_getenv ("TEMP");
+		if (!path) {
+			path = strdup ("C:\\WINDOWS\\Temp\\");
+		}
+	} else {
+		DWORD (WINAPI *glpn)(LPCSTR, LPCSTR, DWORD) = r_lib_dl_sym (GetModuleHandle (TEXT ("kernel32.dll")), "GetLongPathNameA");
+		if (glpn) {
+			// Windows XP sometimes returns short path name
+			glpn (tmpdir, tmpdir, sizeof (tmpdir));
+		}
+		path = strdup (tmpdir);
+	}
+	// Windows 7, stat() function fail if tmpdir ends with '\\'
+	if (path) {
+		int path_len = strlen (path);
+		if (path_len > 0 && path[path_len - 1] == '\\') {
+			path[path_len - 1] = '\0';
+		}
 	}
 #elif __ANDROID__
 	char *path = strdup ("/data/data/org.radare.radare2installer/radare2/tmp");
@@ -889,7 +924,7 @@ R_API char *r_file_tmpdir() {
 R_API bool r_file_copy (const char *src, const char *dst) {
 	/* TODO: implement in C */
 	/* TODO: Use NO_CACHE for iOS dyldcache copying */
-#if __APPLE__
+#if HAVE_COPYFILE_H
 	return copyfile (src, dst, 0, 0) != -1;
 #elif __WINDOWS__
 	return r_sys_cmdf ("copy %s %s", src, dst);

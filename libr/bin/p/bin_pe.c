@@ -1,4 +1,4 @@
-/* radare - LGPL - Copyright 2009-2016 - nibble, pancake, alvarofe */
+/* radare - LGPL - Copyright 2009-2017 - nibble, pancake, alvarofe */
 
 #include <r_types.h>
 #include <r_util.h>
@@ -142,10 +142,9 @@ static RList* sections(RBinFile *arch) {
 	struct PE_(r_bin_pe_obj_t) *bin = (struct PE_(r_bin_pe_obj_t)*)arch->o->bin_obj;
 	ut64 ba = baddr (arch);
 	int i;
-	if (!(ret = r_list_new ())) {
+	if (!(ret = r_list_newf ((RListFree)free))) {
 		return NULL;	
 	}
-	ret->free = free;
 	if (!(sections = PE_(r_bin_pe_get_sections) (bin))){
 		r_list_free (ret);
 		return NULL;
@@ -183,6 +182,12 @@ static RList* sections(RBinFile *arch) {
 		}
 		if (R_BIN_PE_SCN_IS_READABLE (sections[i].flags)) {
 			ptr->srwx |= R_BIN_SCN_READABLE;
+		} else {
+			//fix those sections that could have been fucked up
+			//if the section does have -x- but not -r- add it 
+			if (R_BIN_PE_SCN_IS_EXECUTABLE (sections[i].flags)) {
+				ptr->srwx |= R_BIN_SCN_READABLE;
+			}
 		}
 		if (R_BIN_PE_SCN_IS_SHAREABLE (sections[i].flags)) {
 			ptr->srwx |= R_BIN_SCN_SHAREABLE;
@@ -218,10 +223,9 @@ static RList* symbols(RBinFile *arch) {
 	struct r_bin_pe_import_t *imports = NULL;
 	int i;
 
-	if (!(ret = r_list_new ())) {
+	if (!(ret = r_list_newf (free))) {
 		return NULL;
 	}
-	ret->free = free;
 	if ((symbols = PE_(r_bin_pe_get_exports)(arch->o->bin_obj))) {
 		for (i = 0; !symbols[i].last; i++) {
 		    if (!(ptr = R_NEW0 (RBinSymbol))) {
@@ -451,7 +455,7 @@ static RBinInfo* info(RBinFile *arch) {
 	ret->machine = PE_(r_bin_pe_get_machine) (arch->o->bin_obj);
 	ret->subsystem = PE_(r_bin_pe_get_subsystem) (arch->o->bin_obj);
 	if (is_dot_net (arch)) {
-		ret->lang = "msil";
+		ret->lang = "cil";
 	}
 	if (is_vb6 (arch)) {
 		ret->lang = "vb";
@@ -467,6 +471,7 @@ static RBinInfo* info(RBinFile *arch) {
 	ret->bits = PE_(r_bin_pe_get_bits) (arch->o->bin_obj);
 	ret->big_endian = PE_(r_bin_pe_is_big_endian) (arch->o->bin_obj);
 	ret->dbg_info = 0;
+	ret->has_lit = true;
 	ret->has_canary = has_canary (arch);
 	ret->has_nx = haschr (arch, IMAGE_DLL_CHARACTERISTICS_NX_COMPAT);
 	ret->has_pi = haschr (arch, IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE);

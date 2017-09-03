@@ -31,6 +31,7 @@ R_API void r_io_undo_enable(RIO *io, int s, int w) {
 
 R_API RIOUndos *r_io_sundo(RIO *io, ut64 offset) {
 	RIOUndos *undo;
+	RIOSection *sec;
 
 	if (!io->undo.s_enable || !io->undo.undos)
 		return NULL;
@@ -47,12 +48,18 @@ R_API RIOUndos *r_io_sundo(RIO *io, ut64 offset) {
 	io->undo.redos++;
 
 	undo = &io->undo.seek[io->undo.idx];
-	io->off = r_io_section_vaddr_to_maddr_try (io, undo->off);
+	sec = r_io_section_vget (io, undo->off);
+	if (!sec || (sec->paddr == sec->vaddr)) {
+		io->off = undo->off;
+	} else {
+		io->off = undo->off - sec->vaddr + sec->paddr;
+	}
 	return undo;
 }
 
 R_API RIOUndos *r_io_sundo_redo(RIO *io) {
 	RIOUndos *undo;
+	RIOSection *sec;
 
 	if (!io->undo.s_enable || !io->undo.redos)
 		return NULL;
@@ -62,7 +69,12 @@ R_API RIOUndos *r_io_sundo_redo(RIO *io) {
 	io->undo.redos--;
 
 	undo = &io->undo.seek[io->undo.idx];
-	io->off = r_io_section_vaddr_to_maddr_try (io, undo->off);
+	sec = r_io_section_vget (io, undo->off);
+	if (!sec || (sec->paddr == sec->vaddr)) {
+		io->off = undo->off;
+	} else {
+		io->off = undo->off - sec->vaddr + sec->paddr;
+	}
 	return undo;
 }
 
@@ -112,23 +124,23 @@ R_API RList *r_io_sundo_list(RIO *io, int mode) {
 
 	idx = io->undo.idx;
 	start = (idx - undos + R_IO_UNDOS) % R_IO_UNDOS;
-	end   = (idx + redos + 1) % R_IO_UNDOS;
+	end = (idx + redos + 1) % R_IO_UNDOS;
 
 	j = 0;
 	switch (mode) {
 	case 'j':
 		io->cb_printf ("[");
 		break;
-	}
-	if (!mode) {
+	case 0:
 		list = r_list_newf (free);
+		break;
 	}
 	const char *comma = "";
 	for (i = start; i < end || j == 0; i = (i + 1) % R_IO_UNDOS) {
 		int idx = (j< undos)? undos - j - 1: j - undos - 1;
 		RIOUndos *undo = &io->undo.seek[i];
 		ut64 addr = undo->off;
-		ut64 notLast = j+1<undos && (i != end - 1);
+		ut64 notLast = (j + 1 < undos) && (i != end - 1);
 		switch (mode) {
 		case '=':
 			if (j < undos) {
@@ -153,9 +165,12 @@ R_API RList *r_io_sundo_list(RIO *io, int mode) {
 		case 0:
 			if (list) {
 				RIOUndos  *u = R_NEW0 (RIOUndos);
-				memcpy (u, undo, sizeof (RIOUndos));
-				r_list_append (list, u);
+				if (u) {
+					memcpy (u, undo, sizeof (RIOUndos));
+					r_list_append (list, u);
+				}
 			}
+			break;
 		}
 		j++;
 	}
@@ -204,14 +219,7 @@ R_API void r_io_wundo_clear(RIO *io) {
 
 // rename to r_io_undo_length ?
 R_API int r_io_wundo_size(RIO *io) {
-	RIOUndoWrite *uw;
-	RListIter *iter;
-	int i = 0;
-
-	if (io->undo.w_init)
-		r_list_foreach (io->undo.w_list, iter, uw)
-			i++;
-	return i;
+	return r_list_length (io->undo.w_list);
 }
 
 // TODO: Deprecate or so? iterators must be language-wide, but helpers are useful

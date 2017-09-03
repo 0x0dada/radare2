@@ -6,15 +6,11 @@ files=[
 'zones.c'
 ]
 
-r_flag = shared_library('r_flag', files,
-  include_directories: include_directories([
-  '../include',
-  platform_librinc
-  ]),
+r_flag = library('r_flag', files,
+  include_directories: [platform_inc],
   link_with: [r_util],
   objects: [
-    r_sdb.extract_all_objects()
+	libr2sdb.extract_all_objects()
   ],  
   install: true
 )
-

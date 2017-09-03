@@ -97,14 +97,6 @@ return (0);
 1897 } CONTEXT;
 #endif
 
-//BOOL WINAPI DebugActiveProcessStop(DWORD dwProcessId);
-
-#ifndef _MSC_VER
-BOOL WINAPI DebugBreakProcess(
-  HANDLE Process
-  //_In_  HANDLE Process
-);
-#endif
 typedef struct _SYSTEM_HANDLE
 {
 	ULONG ProcessId;
@@ -161,16 +153,16 @@ typedef struct _OBJECT_TYPE_INFORMATION
 	ULONG NonPagedPoolUsage;
 } OBJECT_TYPE_INFORMATION, *POBJECT_TYPE_INFORMATION;
 
-static void (*gmbn)(HANDLE, HMODULE, LPCSTR, int) = NULL;
-static int (*gmi)(HANDLE, HMODULE, LPMODULEINFO, int) = NULL;
-static BOOL (WINAPI *w32_detach)(DWORD) = NULL;
+static void (*w32_GetModuleBaseName)(HANDLE, HMODULE, LPCSTR, int) = NULL;
+static int (*w32_GetModuleInformation)(HANDLE, HMODULE, LPMODULEINFO, int) = NULL;
+static BOOL (WINAPI *w32_DebugActiveProcessStop)(DWORD) = NULL;
 static HANDLE (WINAPI *w32_openthread)(DWORD, BOOL, DWORD) = NULL;
-static BOOL (WINAPI *w32_dbgbreak)(HANDLE) = NULL;
+static BOOL (WINAPI *w32_DebugBreakProcess)(HANDLE) = NULL;
 static DWORD (WINAPI *w32_getthreadid)(HANDLE) = NULL; // Vista
 static DWORD (WINAPI *w32_getprocessid)(HANDLE) = NULL; // XP
-static HANDLE (WINAPI *w32_openprocess)(DWORD, BOOL, DWORD) = NULL;
+static HANDLE (WINAPI *w32_OpenProcess)(DWORD, BOOL, DWORD) = NULL;
 static BOOL (WINAPI *w32_queryfullprocessimagename)(HANDLE, DWORD, LPCSTR, PDWORD) = NULL;
-static DWORD (WINAPI *psapi_getmappedfilename)(HANDLE, LPVOID, LPCSTR, DWORD) = NULL;
+static DWORD (WINAPI *w32_GetMappedFileName)(HANDLE, LPVOID, LPCSTR, DWORD) = NULL;
 static NTSTATUS (WINAPI *w32_ntquerysysteminformation)(ULONG, PVOID, ULONG, PULONG) = NULL;
 static NTSTATUS (WINAPI *w32_ntqueryinformationthread)(HANDLE, ULONG, PVOID, ULONG, PULONG) = NULL;
 static NTSTATUS (WINAPI *w32_ntduplicateobject)(HANDLE, HANDLE, HANDLE, PHANDLE, ACCESS_MASK, ULONG, ULONG) = NULL;
@@ -181,16 +173,8 @@ static BOOL (WINAPI *w32_InitializeContext)(PVOID, DWORD, PCONTEXT*, PDWORD) = N
 static BOOL (WINAPI *w32_GetXStateFeaturesMask)(PCONTEXT Context, PDWORD64) = NULL;
 static PVOID(WINAPI *w32_LocateXStateFeature)(PCONTEXT Context, DWORD, PDWORD) = NULL;
 static BOOL (WINAPI *w32_SetXStateFeaturesMask)(PCONTEXT Context, DWORD64) = NULL;
-/*#if __MINGW64__
-#define CONTEXT_XSTATE                      (0x00100040)
-#define XSTATE_AVX                          (2)
-#define XSTATE_MASK_AVX                     (4)
-#else
-#define CONTEXT_XSTATE                      (0x00010040)
-#define XSTATE_AVX                          (2)
-#define XSTATE_MASK_AVX                     (4)
-#endif
-*/
+static DWORD (WINAPI *w32_GetModuleFileNameEx)(HANDLE, HMODULE, LPTSTR, DWORD) = NULL;
+static HANDLE (WINAPI *w32_CreateToolhelp32Snapshot)(DWORD, DWORD) = NULL;
 
 #ifndef XSTATE_GSSE
 #define XSTATE_GSSE 2
@@ -254,38 +238,25 @@ static bool w32dbg_SeDebugPrivilege() {
 	return ret;
 }
 
-static void print_lasterr (const char *caller, char *cause) {
-	char cbuffer[100];
-	if (!FormatMessageA (FORMAT_MESSAGE_FROM_SYSTEM |
-				FORMAT_MESSAGE_ARGUMENT_ARRAY,
-				NULL,
-				GetLastError(),
-				LANG_SYSTEM_DEFAULT,
-				(LPSTR)&cbuffer,
-				sizeof (cbuffer)-1,
-				NULL)) {
-		eprintf ("Format message failed with 0x%d\n", (ut32)GetLastError ());
-	} else {
-		eprintf ("Error detected in %s/%s: %s\n", r_str_get (caller), r_str_get (cause), r_str_get (cbuffer));
-	}
-}
-
 static int w32_dbg_init() {
 	HANDLE lib;
 
 	/* escalate privs (required for win7/vista) */
 	w32dbg_SeDebugPrivilege ();
 	/* lookup function pointers for portability */
-	w32_detach = (BOOL (WINAPI *)(DWORD))
+	w32_DebugActiveProcessStop = (BOOL (WINAPI *)(DWORD))
 		GetProcAddress (GetModuleHandleA ("kernel32"),
 				"DebugActiveProcessStop");
 	w32_openthread = (HANDLE (WINAPI *)(DWORD, BOOL, DWORD))
 		GetProcAddress (GetModuleHandleA ("kernel32"), "OpenThread");
-	w32_openprocess = (HANDLE (WINAPI *)(DWORD, BOOL, DWORD))
+	w32_OpenProcess = (HANDLE (WINAPI *)(DWORD, BOOL, DWORD))
 		GetProcAddress (GetModuleHandleA ("kernel32"), "OpenProcess");
-	w32_dbgbreak = (BOOL (WINAPI *)(HANDLE))
+	w32_DebugBreakProcess = (BOOL (WINAPI *)(HANDLE))
 		GetProcAddress (GetModuleHandleA ("kernel32"),
 				"DebugBreakProcess");
+	w32_CreateToolhelp32Snapshot = (HANDLE (WINAPI *)(DWORD, DWORD))
+		GetProcAddress (GetModuleHandleA ("kernel32"),
+			       "CreateToolhelp32Snapshot");
 	// only windows vista :(
 	w32_getthreadid = (DWORD (WINAPI *)(HANDLE))
 		GetProcAddress (GetModuleHandleA ("kernel32"), "GetThreadId");
@@ -310,12 +281,14 @@ static int w32_dbg_init() {
 		eprintf ("Cannot load psapi.dll. Aborting\n");
 		return false;
 	}
-	psapi_getmappedfilename = (DWORD (WINAPI *)(HANDLE, LPVOID, LPCSTR, DWORD))
+	w32_GetMappedFileName = (DWORD (WINAPI *)(HANDLE, LPVOID, LPCSTR, DWORD))
 		GetProcAddress (lib, "GetMappedFileNameA");
-	gmbn = (void (*)(HANDLE, HMODULE, LPCSTR, int))
+	w32_GetModuleBaseName = (void (*)(HANDLE, HMODULE, LPCSTR, int))
 		GetProcAddress (lib, "GetModuleBaseNameA");
-	gmi = (int (*)(HANDLE, HMODULE, LPMODULEINFO, int))
+	w32_GetModuleInformation = (int (*)(HANDLE, HMODULE, LPMODULEINFO, int))
 		GetProcAddress (lib, "GetModuleInformation");
+	w32_GetModuleFileNameEx = (DWORD (WINAPI *)(HANDLE, HMODULE, LPTSTR, DWORD))
+		GetProcAddress (lib, "GetModuleFileNameExA");
 
 	lib=LoadLibraryA("ntdll.dll");
 	w32_ntquerysysteminformation = (NTSTATUS  (WINAPI *)(ULONG, PVOID, ULONG, PULONG))
@@ -326,26 +299,18 @@ static int w32_dbg_init() {
 		GetProcAddress(lib,"NtQueryObject");
 	w32_ntqueryinformationthread = (NTSTATUS  (WINAPI *)(HANDLE, ULONG, PVOID, ULONG, PULONG))
 		GetProcAddress (lib, "NtQueryInformationThread");
-	if (!w32_detach || !w32_openthread || !w32_dbgbreak ||
-	    !gmbn || !gmi) {
+	if (!w32_DebugActiveProcessStop || !w32_openthread || !w32_DebugBreakProcess ||
+	    !w32_GetModuleBaseName || !w32_GetModuleInformation) {
 		// OOPS!
 		eprintf ("debug_init_calls:\n"
 			"DebugActiveProcessStop: 0x%p\n"
 			"OpenThread: 0x%p\n"
 			"DebugBreakProcess: 0x%p\n"
 			"GetThreadId: 0x%p\n",
-			w32_detach, w32_openthread, w32_dbgbreak, w32_getthreadid);
+			w32_DebugActiveProcessStop, w32_openthread, w32_DebugBreakProcess, w32_getthreadid);
 		return false;
 	}
 	return true;
-}
-
-static HANDLE w32_open_process (DWORD access, BOOL inherit, DWORD pid) {
-	HANDLE h = w32_openprocess(access, inherit, pid);
-	if (h == INVALID_HANDLE_VALUE) {
-		print_lasterr((char *)__FUNCTION__, "OpenProcess");
-	}
-	return h;
 }
 
 #if 0
@@ -400,7 +365,7 @@ static int w32_first_thread(int pid) {
 		if (te32.th32OwnerProcessID == pid) {
 			thid = w32_openthread (THREAD_ALL_ACCESS, 0, te32.th32ThreadID);
 			if (!thid) {
-				print_lasterr ((char *)__FUNCTION__, "OpenThread");
+				r_sys_perror ("w32_first_thread/OpenThread");
 				goto err_load_th;
 			}
 			CloseHandle (th);
@@ -411,6 +376,32 @@ err_load_th:
 	eprintf ("Could not find an active thread for pid %d\n", pid);
 	CloseHandle (th);
 	return pid;
+}
+
+static char *get_w32_excep_name(unsigned long code) {
+	char *desc;
+	switch (code) {
+	/* fatal exceptions */
+	case EXCEPTION_ACCESS_VIOLATION:
+		desc = "access violation";
+		break;
+	case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
+		desc = "array bounds exceeded";
+		break;
+	case EXCEPTION_ILLEGAL_INSTRUCTION:
+		desc = "illegal instruction";
+		break;
+	case EXCEPTION_INT_DIVIDE_BY_ZERO:
+		desc = "divide by zero";
+		break;
+	case EXCEPTION_STACK_OVERFLOW:
+		desc = "stack overflow";
+		break;
+	default:
+		desc = "unknown";
+	}
+
+	return desc;
 }
 
 static int debug_exception_event (DEBUG_EVENT *de) {
@@ -426,10 +417,12 @@ static int debug_exception_event (DEBUG_EVENT *de) {
 	case EXCEPTION_ILLEGAL_INSTRUCTION:
 	case EXCEPTION_INT_DIVIDE_BY_ZERO:
 	case EXCEPTION_STACK_OVERFLOW:
-		eprintf ("(%d) Fatal exception in thread %d\n",
-			(int)de->dwProcessId, (int)de->dwThreadId);
+		eprintf ("(%d) Fatal exception (%s) in thread %d\n",
+			(int)de->dwProcessId, 
+			get_w32_excep_name(code),
+			(int)de->dwThreadId);
 		break;
-#if __MINGW64__
+#if __MINGW64__ || _WIN64
 	/* STATUS_WX86_BREAKPOINT */
 	case 0x4000001f:
 		eprintf ("(%d) WOW64 loaded.\n", (int)de->dwProcessId);
@@ -474,7 +467,7 @@ static char *get_file_name_from_handle (HANDLE handle_file) {
 		return NULL;
 	}
 
-	if (!psapi_getmappedfilename (GetCurrentProcess (),
+	if (!w32_GetMappedFileName (GetCurrentProcess (),
 		map,
 		filename,
 		MAX_PATH)) {
@@ -626,7 +619,7 @@ static void * r_debug_findthread (int pid, int tid) {
 	PTHREAD_ITEM threadPtr = NULL;
 	if (lstThread) {
 		threadPtr = (PTHREAD_ITEM)lstThread;
-		while (threadPtr->tid != NULL) {
+		while (threadPtr->tid != 0) {
 			if (threadPtr->pid == pid) {
 				if (threadPtr->tid == tid) {
 					return ((void*)threadPtr);
@@ -653,7 +646,7 @@ static int w32_dbg_wait(RDebug *dbg, int pid) {
 		}
 		memset (&de, 0, sizeof (DEBUG_EVENT));
 		if (WaitForDebugEvent (&de, INFINITE) == 0) {
-			print_lasterr ((char *)__FUNCTION__, "WaitForDebugEvent");
+			r_sys_perror ("w32_dbg_wait/WaitForDebugEvent");
 			return -1;
 		}
 		code = de.dwDebugEventCode;
@@ -735,7 +728,7 @@ static int w32_dbg_wait(RDebug *dbg, int pid) {
 			break;
 		case EXCEPTION_DEBUG_EVENT:
 			switch (de.u.Exception.ExceptionRecord.ExceptionCode) {
-#if __MINGW64__
+#if __MINGW64__ || _WIN64
 			case 0x4000001f:
 #endif
 			case EXCEPTION_BREAKPOINT:
@@ -766,8 +759,8 @@ static int w32_dbg_wait(RDebug *dbg, int pid) {
 	return ret;
 }
 
-static inline int CheckValidPE(unsigned char * PeHeader) {
-	IMAGE_DOS_HEADER *dos_header = (IMAGE_DOS_HEADER *)PeHeader;
+static inline int is_pe_hdr(unsigned char *pe_hdr) {
+	IMAGE_DOS_HEADER *dos_header = (IMAGE_DOS_HEADER *)pe_hdr;
 	IMAGE_NT_HEADERS *nt_headers;
 
 	if (dos_header->e_magic==IMAGE_DOS_SIGNATURE) {
@@ -782,7 +775,7 @@ static inline int CheckValidPE(unsigned char * PeHeader) {
 static HANDLE w32_open_thread (int pid, int tid) {
 	HANDLE thread = w32_openthread (THREAD_ALL_ACCESS, 0, tid);
 	if (thread == INVALID_HANDLE_VALUE) {
-		print_lasterr((char *)__FUNCTION__, "OpenThread");
+		r_sys_perror ("w32_open_thread/OpenThread");
 	}
 	return thread;
 }
@@ -819,7 +812,7 @@ RList *w32_thread_list (int pid, RList *list) {
 #endif
 			thid = w32_openthread (THREAD_ALL_ACCESS, 0, te32.th32ThreadID);
 			if (!thid) {
-				print_lasterr((char *)__FUNCTION__, "OpenThread");
+				r_sys_perror ("w32_thread_list/OpenThread");
                                 goto err_load_th;
 			}
 			r_list_append (list, r_debug_pid_new ("???", te32.th32ThreadID, 0, 's', 0));
@@ -832,10 +825,10 @@ err_load_th:
 }
 
 static RDebugPid *build_debug_pid(PROCESSENTRY32 *pe) {
-	HANDLE process = w32_open_process (0x1000, //PROCESS_QUERY_LIMITED_INFORMATION,
+	HANDLE process = w32_OpenProcess (0x1000, //PROCESS_QUERY_LIMITED_INFORMATION,
 		FALSE, pe->th32ProcessID);
 
-	if (process == INVALID_HANDLE_VALUE || !w32_queryfullprocessimagename) {
+	if (!process || !w32_queryfullprocessimagename) {
 		return r_debug_pid_new (pe->szExeFile, pe->th32ProcessID, 0, 's', 0);
 	}
 
@@ -861,11 +854,11 @@ RList *w32_pids (int pid, RList *list) {
 
 	process_snapshot = CreateToolhelp32Snapshot (TH32CS_SNAPPROCESS, pid);
 	if (process_snapshot == INVALID_HANDLE_VALUE) {
-		print_lasterr ((char *)__FUNCTION__, "CreateToolhelp32Snapshot");
+		r_sys_perror ("w32_pids/CreateToolhelp32Snapshot");
 		return list;
 	}
 	if (!Process32First (process_snapshot, &pe)) {
-		print_lasterr ((char *)__FUNCTION__, "Process32First");
+		r_sys_perror ("w32_pids/Process32First");
 		CloseHandle (process_snapshot);
 		return list;
 	}
@@ -885,65 +878,55 @@ RList *w32_pids (int pid, RList *list) {
 	return list;
 }
 
-int w32_terminate_process (RDebug *dbg, int pid) {
-	HANDLE process = w32_open_process(PROCESS_TERMINATE | SYNCHRONIZE , FALSE, pid);
-	if (process == INVALID_HANDLE_VALUE) {
-		return false;
+bool w32_terminate_process (RDebug *dbg, int pid) {
+	HANDLE h_proc = w32_OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE , FALSE, pid);
+	bool ret = false;
+	if (!h_proc) {
+		r_sys_perror ("w32_terminate_process/OpenProcess");
+		goto err_w32_terminate_process;
 	}
-
 	/* stop debugging if we are still attached */
-	if (w32_detach) {
-		w32_detach (pid); //DebugActiveProcessStop (pid);
+	if (w32_DebugActiveProcessStop) {
+		w32_DebugActiveProcessStop (pid); //DebugActiveProcessStop (pid);
 	}
-	if (TerminateProcess (process, 1) == 0) {
-		print_lasterr ((char *)__FUNCTION__, "TerminateProcess");
-		CloseHandle (process);
-		return false;
+	if (TerminateProcess (h_proc, 1) == 0) {
+		r_sys_perror ("e32_terminate_process/TerminateProcess");
+		goto err_w32_terminate_process;
 
 	}
-	DWORD ret_wait;
 	/* wait up to one second to give the process some time to exit */
-	ret_wait = WaitForSingleObject (process, 1000);
+	DWORD ret_wait = WaitForSingleObject (h_proc, 1000);
 	if (ret_wait == WAIT_FAILED) {
-		print_lasterr ((char *)__FUNCTION__, "WaitForSingleObject");
-		CloseHandle (process);
-		return false;
+		r_sys_perror ("w32_terminate_process/WaitForSingleObject");
+		goto err_w32_terminate_process;
 	}
 	if (ret_wait == WAIT_TIMEOUT) {
 		eprintf ("(%d) Waiting for process to terminate timed out.\n", pid);
-		CloseHandle (process);
-		return false;
+		goto err_w32_terminate_process;
 	}
-
-	return true;
+	ret = true;
+err_w32_terminate_process:
+	if (h_proc) {
+		CloseHandle (h_proc);
+	}
+	return ret;
 }
 
 void w32_break_process (void *d) {
-	static HANDLE (WINAPI *w32_dbgbreak)(HANDLE) = NULL;
 	RDebug *dbg = (RDebug *)d;
-	HANDLE lib;
-	HANDLE process = w32_open_process (PROCESS_ALL_ACCESS, FALSE, dbg->pid);
-	if (process == INVALID_HANDLE_VALUE) {
-		return;
+	HANDLE h_proc = w32_OpenProcess (PROCESS_ALL_ACCESS, FALSE, dbg->pid);
+	if (!h_proc) {
+		r_sys_perror ("w32_break_process/w32_OpenProcess");
+		goto err_w32_break_process;
 	}
-	lib = LoadLibraryA ("kernel32.dll");
-	if (!lib) {
-		print_lasterr ((char *)__FUNCTION__, "LoadLibrary");
-		CloseHandle (process);
-		return;
+	if (!w32_DebugBreakProcess (h_proc)) {
+		r_sys_perror ("w32_break_process/w32_DebugBreakProcess");
+		goto err_w32_break_process;
 	}
-	if (!w32_dbgbreak) {
-		w32_dbgbreak = (HANDLE (WINAPI *)(HANDLE))
-				GetProcAddress (GetModuleHandleA ("kernel32"),
-					"DebugBreakProcess");
+err_w32_break_process:
+	if (h_proc) {
+		CloseHandle (h_proc);
 	}
-	if (process != INVALID_HANDLE_VALUE && w32_dbgbreak != NULL) {
-		if (!w32_dbgbreak (process)) {
-			print_lasterr ((char *)__FUNCTION__, "DebugBreakProcess");
-		}
-	}
-	CloseHandle (process);
-	CloseHandle (lib);
 }
 
 static int GetAVX (HANDLE hThread, ut128 * xmm, ut128 * ymm) {
@@ -1024,8 +1007,8 @@ static void printwincontext(HANDLE hThread, CONTEXT * ctx) {
 	ut80 st[8];
 	ut64 mm[8];
 	ut16 top = 0;
-	int x = 0, nxmm = 0,nymm = 0;
-#if __MINGW64__
+	int x = 0, nxmm = 0, nymm = 0;
+#if __MINGW64__ || _WIN64
 	eprintf ("ControlWord   = %08x StatusWord   = %08x\n", ctx->FltSave.ControlWord, ctx->FltSave.StatusWord);
 	eprintf ("MxCsr         = %08x TagWord      = %08x\n", ctx->MxCsr, ctx->FltSave.TagWord);
 	eprintf ("ErrorOffset   = %08x DataOffset   = %08x\n", ctx->FltSave.ErrorOffset, ctx->FltSave.DataOffset);
@@ -1049,10 +1032,10 @@ static void printwincontext(HANDLE hThread, CONTEXT * ctx) {
 	}
 	nxmm = 16;
 #else
-	eprintf ("ControlWord   = %08x StatusWord   = %08x\n", ctx->FloatSave.ControlWord, ctx->FloatSave.StatusWord);
-	eprintf ("MxCsr         = %08x TagWord      = %08x\n", *(ut32 *)&ctx->ExtendedRegisters[24], ctx->FloatSave.TagWord);
-	eprintf ("ErrorOffset   = %08x DataOffset   = %08x\n", ctx->FloatSave.ErrorOffset, ctx->FloatSave.DataOffset);
-	eprintf ("ErrorSelector = %08x DataSelector = %08x\n", ctx->FloatSave.ErrorSelector, ctx->FloatSave.DataSelector);
+	eprintf ("ControlWord   = %08x StatusWord   = %08x\n", (ut32) ctx->FloatSave.ControlWord, (ut32) ctx->FloatSave.StatusWord);
+	eprintf ("MxCsr         = %08x TagWord      = %08x\n", *(ut32 *)&ctx->ExtendedRegisters[24], (ut32)ctx->FloatSave.TagWord);
+	eprintf ("ErrorOffset   = %08x DataOffset   = %08x\n", (ut32)ctx->FloatSave.ErrorOffset, (ut32)ctx->FloatSave.DataOffset);
+	eprintf ("ErrorSelector = %08x DataSelector = %08x\n", (ut32)ctx->FloatSave.ErrorSelector, (ut32) ctx->FloatSave.DataSelector);
 	for (x = 0; x < 8; x++) {
 		st[x].High = (ut16) *((ut16 *)(&ctx->FloatSave.RegisterArea[x * 10] + 8));
 		st[x].Low = (ut64)  *((ut64 *)&ctx->FloatSave.RegisterArea[x * 10]);
@@ -1086,7 +1069,7 @@ static void printwincontext(HANDLE hThread, CONTEXT * ctx) {
 		eprintf ("XMM%i %016"PFMT64x" %016"PFMT64x"\n", x, xmm[x].High, xmm[x].Low);
 	}
 	// show Ymm regs
-	nymm = GetAVX(hThread, &xmm, &ymm);
+	nymm = GetAVX (hThread, &xmm, &ymm);
 	if (nymm) {
 		for (x = 0; x < nymm; x++) {
 			eprintf ("Ymm%d: %016"PFMT64x" %016"PFMT64x" %016"PFMT64x" %016"PFMT64x"\n", x, ymm[x].High, ymm[x].Low, xmm[x].High, xmm[x].Low );
@@ -1121,7 +1104,7 @@ static int w32_reg_read (RDebug *dbg, int type, ut8 *buf, int size) {
 			size = 0;
 		}
 	} else {
-		eprintf ("GetThreadContext: %x\n", (int)GetLastError ());
+		r_sys_perror ("w32_reg_read/GetThreadContext");
 		size = 0;
 	}
 	if (showfpu) {

@@ -1057,6 +1057,11 @@ static Sdb *compute_pos(const RAGraph *g, int is_left, Sdb *v_nodes) {
 	return res;
 }
 
+static int free_vertical_nodes_cb(void *user UNUSED, const char *k UNUSED, const char *v) {
+	r_list_free ((RList *) (size_t) sdb_atoi (v));
+	return 1;
+}
+
 /* calculates position of all nodes, but in particular dummies nodes */
 /* computes two different placements (called "left"/"right") and set the final
  * position of each node to the average of the values in the two placements */
@@ -1089,6 +1094,7 @@ static void place_dummies(const RAGraph *g) {
 xplus_err:
 	sdb_free (xminus);
 xminus_err:
+	sdb_foreach (vertical_nodes, (SdbForeachCallback)free_vertical_nodes_cb, NULL);
 	sdb_free (vertical_nodes);
 }
 
@@ -1770,8 +1776,11 @@ static char *get_body(RCore *core, ut64 addr, int size, int opts) {
 		r_config_set_i (core->config, "asm.bytes", false);
 		r_config_set_i (core->config, "asm.offset", false);
 	}
+	bool html = r_config_get_i (core->config, "scr.html");
+	r_config_set_i (core->config, "scr.html", 0);
 	body = r_core_cmd_strf (core,
-		"%s %d @ 0x%08"PFMT64x, cmd, size, addr);
+			"%s %d @ 0x%08"PFMT64x, cmd, size, addr);
+	r_config_set_i (core->config, "scr.html", html);
 
 	// restore original options
 	core->print->cur_enabled = o_cursor;
@@ -2650,10 +2659,12 @@ static int agraph_print(RAGraph *g, int is_interactive, RCore *core, RAnalFuncti
 	r_cons_canvas_print_region (g->can);
 
 	if (is_interactive) {
-		const char *cmdv;
-		cmdv = r_config_get (core->config, "cmd.gprompt");
+		const char *cmdv = r_config_get (core->config, "cmd.gprompt");
+		r_cons_strcat (Color_RESET);
 		if (cmdv && *cmdv) {
-			r_cons_gotoxy (0, 1);
+			r_cons_gotoxy (0, 0);
+			r_cons_fill_line ();
+			r_cons_gotoxy (0, 0);
 			r_core_cmd0 (core, cmdv);
 		}
 		r_cons_flush ();
@@ -3016,6 +3027,7 @@ static void goto_asmqjmps(RAGraph *g, RCore *core) {
 			r_io_sundo_push (core->io, core->offset, 0);
 			r_core_seek (core, addr, 0);
 		}
+		free (title);
 	}
 }
 
@@ -3112,17 +3124,18 @@ R_API int r_core_visual_graph(RCore *core, RAGraph *g, RAnalFunction *_fcn, int 
 			eprintf ("No function in current seek\n");
 			r_config_restore (hc);
 			r_config_hold_free (hc);
+			r_cons_canvas_free (can);
 			return false;
 		}
 		g = r_agraph_new (can);
-		g->is_tiny = is_interactive == 2;
-		g->layout = r_config_get_i (core->config, "graph.layout");
 		if (!g) {
 			r_cons_canvas_free (can);
 			r_config_restore (hc);
 			r_config_hold_free (hc);
 			return false;
 		}
+		g->is_tiny = is_interactive == 2;
+		g->layout = r_config_get_i (core->config, "graph.layout");
 	} else {
 		o_can = g->can;
 	}
@@ -3144,6 +3157,7 @@ R_API int r_core_visual_graph(RCore *core, RAGraph *g, RAnalFunction *_fcn, int 
 		r_cons_canvas_free (can);
 		r_config_restore (hc);
 		r_config_hold_free (hc);
+		r_agraph_free (g);
 		return false;
 	}
 	grd->g = g;
@@ -3262,8 +3276,8 @@ R_API int r_core_visual_graph(RCore *core, RAGraph *g, RAnalFunction *_fcn, int 
 			ut64 old_off = core->offset;
 			ut64 off = r_core_anal_get_bbaddr (core, core->offset);
 			r_core_seek (core, off, 0);
-			if ((key == 'x' && !r_core_visual_xrefs_x (core)) ||
-			    (key == 'X' && !r_core_visual_xrefs_X (core))) {
+			if ((key == 'x' && !r_core_visual_refs (core, true)) ||
+			    (key == 'X' && !r_core_visual_refs (core, false))) {
 				r_core_seek (core, old_off, 0);
 			}
 			break;

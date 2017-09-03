@@ -13,12 +13,21 @@
 #include <r_types.h>
 #include <r_util.h>
 #include <r_lib.h>
+
+static char** env = NULL;
+
 #if (__linux__ && __GNU_LIBRARY__) || defined(NETBSD_WITH_BACKTRACE)
 # include <execinfo.h>
 #endif
 #if __APPLE__
 #include <errno.h>
-#if !__POWERPC__
+#ifdef __MAC_10_8
+#define HAVE_ENVIRON 1
+#else
+#define HAVE_ENVIRON 0
+#endif
+
+#if !HAVE_ENVIRON
 #include <execinfo.h>
 #endif
 // iOS dont have this we cant hardcode
@@ -59,6 +68,10 @@ static QueryFullProcessImageNameA_t QueryFullProcessImageNameA;
 #endif
 
 R_LIB_VERSION(r_util);
+#ifdef _MSC_VER
+// Required for GetModuleFileNameEx linking
+#pragma comment(lib, "psapi.lib")
+#endif
 
 static const struct {const char* name; ut64 bit;} arch_bit_array[] = {
     {"x86", R_SYS_ARCH_X86},
@@ -112,7 +125,7 @@ R_API ut64 r_sys_now(void) {
 R_API int r_sys_truncate(const char *file, int sz) {
 #if __WINDOWS__ && !__CYGWIN__
 	int fd = r_sandbox_open (file, O_RDWR, 0644);
-	if (fd != -1) {
+	if (fd == -1) {
 		return false;
 	}
 #ifdef _MSC_VER
@@ -243,9 +256,18 @@ R_API int r_sys_usleep(int usecs) {
 }
 
 R_API int r_sys_clearenv(void) {
-#if __UNIX__ || __CYGWIN__ && !defined(MINGW32)
-#if __APPLE__ && __POWERPC__
+#if __UNIX__ || (__CYGWIN__ && !defined(MINGW32))
+#if __APPLE__ && !HAVE_ENVIRON
 	/* do nothing */
+	if (!env) {
+		env = r_sys_get_environ ();
+		return 0;
+	}
+	if (env) {
+		while (*environ) {
+			*environ++ = NULL;
+		}
+	}
 #else
 	if (!environ) {
 		return 0;
@@ -314,11 +336,11 @@ static int checkcmd(const char *c) {
 R_API int r_sys_crash_handler(const char *cmd) {
 #if __UNIX__
 	struct sigaction sigact;
-	void *array[1];
 	if (!checkcmd (cmd)) {
 		return false;
 	}
 #ifdef HAVE_BACKTRACE
+	void *array[1];
 	/* call this outside of the signal handler to init it safely */
 	backtrace (array, 1);
 #endif
@@ -352,14 +374,23 @@ R_API int r_sys_crash_handler(const char *cmd) {
 
 R_API char *r_sys_getenv(const char *key) {
 #if __WINDOWS__ && !__CYGWIN__
-	static char envbuf[1024];
+	static char envbuf[4096];
+	DWORD dwRet;
+
 	if (!key) {
 		return NULL;
 	}
-	envbuf[0] = 0;
-	GetEnvironmentVariableA (key, (LPSTR)&envbuf, sizeof (envbuf));
-	// TODO: handle return value of GEV
-	return *envbuf? strdup (envbuf): NULL;
+	dwRet = GetEnvironmentVariableA (key, (LPSTR)&envbuf, sizeof (envbuf));
+	if (dwRet == 0) {
+		/* Variable not found. */
+		return NULL;
+	}
+	if (dwRet == sizeof(envbuf)) {
+		/* The contents of envbuf are undefined, so return NULL */
+		eprintf ("Buffer too small to read `%s' environment variable.\n", key);
+		return NULL;
+	}
+	return strdup (envbuf);
 #else
 	char *b;
 	if (!key) {
@@ -371,17 +402,11 @@ R_API char *r_sys_getenv(const char *key) {
 }
 
 R_API char *r_sys_getdir(void) {
-	char *ret;
 #if __WINDOWS__ && !__CYGWIN__
-	char *cwd = _getcwd (NULL, 0);
+	return _getcwd (NULL, 0);
 #else
-	char *cwd = getcwd (NULL, 0);
+	return getcwd (NULL, 0);
 #endif
-	ret = cwd ? strdup (cwd) : NULL; 
-	if (cwd) {
-		free (cwd);
-	}
-	return ret;
 }
 
 R_API int r_sys_chdir(const char *s) {
@@ -845,7 +870,6 @@ R_API char *r_sys_pid_to_path(int pid) {
 			}
 		}
 	}
-#endif
 	HANDLE handle = NULL;
 	CHAR filename[MAX_PATH];
 	DWORD maxlength = MAX_PATH;
@@ -868,6 +892,23 @@ R_API char *r_sys_pid_to_path(int pid) {
 		return strdup (filename);
 	}
 	return NULL;
+#else
+	HANDLE processHandle = NULL;
+	TCHAR filename[FILENAME_MAX];
+
+	processHandle = OpenProcess (PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+	if (processHandle != NULL) {
+		if (GetModuleFileNameEx (processHandle, NULL, filename, FILENAME_MAX) == 0) {
+			eprintf ("r_sys_pid_to_path: Cannot get module filename.");
+		} else {
+			return strdup (filename);
+		}
+		CloseHandle (processHandle);
+	} else {
+		eprintf ("r_sys_pid_to_path: Cannot open process.");
+	}
+	return NULL;
+#endif
 #elif __APPLE__
 #if __POWERPC__
 #warning TODO getpidproc
@@ -898,11 +939,12 @@ R_API char *r_sys_pid_to_path(int pid) {
 #endif
 }
 
-static char** env = NULL;
-
+// TODO: rename to r_sys_env_init()
 R_API char **r_sys_get_environ () {
-#if __APPLE__ && !__POWERPC__
+#if __APPLE__ && !HAVE_ENVIRON
 	env = *_NSGetEnviron();
+#else
+	env = environ;
 #endif
 	// return environ if available??
 	if (!env) {

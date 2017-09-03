@@ -91,10 +91,14 @@ static void rasm2_list(RAsm *la, const char *arch) {
 			}
 		} else {
 			bits[0] = 0;
-			if (h->bits & 8) strcat (bits, "8 ");
-			if (h->bits & 16) strcat (bits, "16 ");
-			if (h->bits & 32) strcat (bits, "32 ");
-			if (h->bits & 64) strcat (bits, "64 ");
+			if (h->bits == 27) {
+				strcat (bits, "27");
+			} else {
+				if (h->bits & 8) strcat (bits, "8 ");
+				if (h->bits & 16) strcat (bits, "16 ");
+				if (h->bits & 32) strcat (bits, "32 ");
+				if (h->bits & 64) strcat (bits, "64 ");
+			}
 			feat = "__";
 			if (h->assemble && h->disassemble) feat = "ad";
 			if (h->assemble && !h->disassemble) feat = "a_";
@@ -196,6 +200,7 @@ static int rasm_show_help(int v) {
 		printf (" -a [arch]    Set architecture to assemble/disassemble (see -L)\n"
 			" -A           Show Analysis information from given hexpairs\n"
 			" -b [bits]    Set cpu register size (8, 16, 32, 64) (RASM2_BITS)\n"
+			" -B           Binary input/output (-l is mandatory for binary input)\n"
 			" -c [cpu]     Select specific CPU (depends on arch)\n"
 			" -C           Output in C format\n"
 			" -d, -D       Disassemble from hexpair bytes (-D show hexpairs)\n"
@@ -205,17 +210,18 @@ static int rasm_show_help(int v) {
 			" -F [in:out]  Specify input and/or output filters (att2intel, x86.pseudo, ...)\n"
 			" -h, -hh      Show this help, -hh for long\n"
 			" -i [len]     ignore/skip N bytes of the input buffer\n"
+			" -j           output in json format\n"
 			" -k [kernel]  Select operating system (linux, windows, darwin, ..)\n"
 			" -l [len]     Input/Output length\n"
 			" -L           List Asm plugins: (a=asm, d=disasm, A=analyze, e=ESIL)\n"
 			" -o [offset]  Set start address for code (default 0)\n"
 			" -O [file]    Output file name (rasm2 -Bf a.asm -O a)\n"
 			" -p           Run SPP over input for assembly\n"
+			" -q           quiet mode\n"
+			" -r           output in radare commands\n"
 			" -s [syntax]  Select syntax (intel, att)\n"
-			" -B           Binary input/output (-l is mandatory for binary input)\n"
 			" -v           Show version information\n"
 			" -w           What's this instruction for? describe opcode\n"
-			" -q           quiet mode\n"
 			" If '-l' value is greater than output length, output is padded with nops\n"
 			" If the last argument is '-' reads from stdin\n");
 		printf ("Environment:\n"
@@ -326,6 +332,11 @@ static void print_buf(char *str) {
 	} else printf ("%s\n", str);
 }
 
+static bool print_label(void *user, const char *k, void *v) {
+	printf ("f label.%s = %s\n", k, (const char *)v);
+	return true;
+}
+
 static int rasm_asm(const char *buf, ut64 offset, ut64 len, int bits, int bin, bool use_spp) {
 	RAsmCode *acode;
 	int i, j, ret = 0;
@@ -376,6 +387,26 @@ static int __lib_anal_cb(RLibPlugin *pl, void *user, void *data) {
 
 static int __lib_anal_dt(RLibPlugin *pl, void *p, void *u) {
 	return true;
+}
+
+static int print_assembly_output(const char *buf, ut64 offset, ut64 len, int bits,
+                                 int bin, bool use_spp, bool rad, char *arch) {
+	int ret = 0;
+	if (rad) {
+		printf ("e asm.arch=%s\n", arch? arch: R_SYS_ARCH);
+		printf ("e asm.bits=%d\n", bits);
+		if (offset) {
+			printf ("s 0x%"PFMT64x"\n", offset);
+		}
+		printf ("wx ");
+	}
+	ret = rasm_asm ((char *)buf, offset, len, a->bits, bin, use_spp);
+	if (rad) {
+		printf ("f entry = $$\n");
+		printf ("f label.main = $$ + 1\n");
+		ht_foreach (a->flags, print_label, NULL);
+	}
+	return ret;
 }
 
 int main (int argc, char *argv[]) {
@@ -433,6 +464,8 @@ int main (int argc, char *argv[]) {
 		r_asm_set_bits (a, sysbits);
 		r_anal_set_bits (anal, sysbits);
 	}
+	// TODO set addrbytes
+	anal->addrbytes = a->addrbytes = 1;
 	char *r2arch = r_sys_getenv ("R2_ARCH");
 	if (r2arch) {
 		arch = r2arch;
@@ -442,7 +475,7 @@ int main (int argc, char *argv[]) {
 		bits = r_num_math (NULL, r2bits);
 		free (r2bits);
 	}
-	while ((c = getopt (argc, argv, "Ai:k:DCc:eEva:b:s:do:Bl:hjLf:F:wqO:pr")) != -1) {
+	while ((c = getopt (argc, argv, "a:Ab:Bc:CdDeEf:F:hi:jk:l:Lo:O:pqrs:vw")) != -1) {
 		switch (c) {
 		case 'a':
 			arch = optarg;
@@ -488,12 +521,6 @@ int main (int argc, char *argv[]) {
 		case 'j':
 			json = true;
 			break;
-		case 'r':
-			rad = true;
-			break;
-		case 'q':
-			quiet = true;
-			break;
 		case 'k':
 			kernel = optarg;
 			break;
@@ -514,14 +541,20 @@ int main (int argc, char *argv[]) {
 		case 'p':
 			use_spp = true;
 			break;
+		case 'q':
+			quiet = true;
+			break;
+		case 'r':
+			rad = true;
+			break;
 		case 's':
 			if (*optarg == '?') {
 				printf ("att\nintel\nmasm\njz\nregnum\n");
-				return false;
+				return 0;
 			} else {
 				int syntax = r_asm_syntax_from_string (optarg);
 				if (syntax == -1) {
-					return false;
+					return 1;
 				}
 				r_asm_set_syntax (a, syntax);
 			}
@@ -632,7 +665,8 @@ int main (int argc, char *argv[]) {
 			} else if (analinfo) {
 				ret = show_analinfo ((const char *)buf, offset);
 			} else {
-				ret = rasm_asm ((char *)buf, offset, len, a->bits, bin, use_spp);
+				ret = print_assembly_output ((char *)buf, offset, len,
+								a->bits, bin, use_spp, rad, arch);
 			}
 		} else {
 			content = r_file_slurp (file, &length);
@@ -653,7 +687,8 @@ int main (int argc, char *argv[]) {
 				} else if (analinfo) {
 					ret = show_analinfo ((const char *)buf, offset);
 				} else {
-					ret = rasm_asm (content, offset, length, a->bits, bin, use_spp);
+					ret = print_assembly_output (content, offset, length,
+									a->bits, bin, use_spp, rad, arch);
 				}
 				ret = !ret;
 				free (content);
@@ -726,12 +761,8 @@ int main (int argc, char *argv[]) {
 		} else if (analinfo) {
 			ret = show_analinfo ((const char *)argv[optind], offset);
 		} else {
-			if (rad) {
-				printf ("e asm.arch=%s\n", arch? arch: R_SYS_ARCH);
-				printf ("e asm.bits=%d\n", bits);
-				printf ("wx ");
-			}
-			ret = rasm_asm (argv[optind], offset, len, a->bits, bin, use_spp);
+			ret = print_assembly_output (argv[optind], offset, len, a->bits,
+							bin, use_spp, rad, arch);
 		}
 		if (!ret) {
 			eprintf ("invalid\n");

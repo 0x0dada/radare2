@@ -31,6 +31,7 @@ static bool pdc = false;
 static bool quiet = false;
 static RCore *core = NULL;
 static const char *arch = NULL;
+const char *runcmd = NULL;
 static int bits = 0;
 static int anal_all = 0;
 static bool verbose = false;
@@ -58,16 +59,20 @@ static RCore *opencore(const char *f) {
 		}
 		r_core_bin_load (c, NULL, baddr);
 		(void) r_core_bin_update_arch_bits (c);
+
+		if (anal_all) {
+			const char *cmd = "aac";
+			switch (anal_all) {
+			case 1: cmd = "aaa"; break;
+			case 2: cmd = "aaaa"; break;
+			}
+			r_core_cmd0 (c, cmd);
+		}
+		if (runcmd) {
+			r_core_cmd0 (c, runcmd);
+		}
 	}
 	// TODO: must enable io.va here if wanted .. r_config_set_i (c->config, "io.va", va);
-	if (f && anal_all) {
-		const char *cmd = "aac";
-		switch (anal_all) {
-		case 1: cmd = "aaa"; break;
-		case 2: cmd = "aaaa"; break;
-		}
-		r_core_cmd0 (c, cmd);
-	}
 	return c;
 }
 
@@ -185,7 +190,8 @@ static int cb(RDiff *d, void *user, RDiffOp *op) {
 	case 0:
 	default:
 		if (disasm) {
-			printf ("--- 0x%08"PFMT64x "\n", op->a_off);
+			int i;
+			printf ("--- 0x%08"PFMT64x "  ", op->a_off);
 			if (!core) {
 				core = opencore (file);
 				if (arch) {
@@ -195,9 +201,22 @@ static int cb(RDiff *d, void *user, RDiffOp *op) {
 					r_config_set_i (core->config, "asm.bits", bits);
 				}
 			}
+			for (i = 0; i < op->a_len; i++) {
+				printf ("%02x", op->a_buf[i]);
+			}
+			printf ("\n");
 			if (core) {
-				RAsmCode *ac = r_asm_mdisassemble (core->assembler, op->a_buf, op->a_len);
-				printf ("%s\n", ac->buf_asm);
+				int len = R_MAX (4, op->a_len);
+				RAsmCode *ac = r_asm_mdisassemble (core->assembler, op->a_buf, len);
+				if (quiet) {
+					char *bufasm = r_str_prefix_all (strdup (ac->buf_asm), "- ");
+					printf ("%s\n", bufasm);
+					free (bufasm);
+				} else {
+					char *bufasm = r_str_prefix_all (strdup (ac->buf_asm), Color_RED"- ");
+					printf ("%s"Color_RESET, bufasm);
+					free (bufasm);
+				}
 				// r_asm_code_free (ac);
 			}
 		} else {
@@ -207,13 +226,27 @@ static int cb(RDiff *d, void *user, RDiffOp *op) {
 			}
 		}
 		if (disasm) {
-			printf ("+++ 0x%08"PFMT64x "\n", op->b_off);
+			int i;
+			printf ("+++ 0x%08"PFMT64x "  ", op->b_off);
 			if (!core) {
 				core = opencore (NULL);
 			}
+			for (i = 0; i < op->b_len; i++) {
+				printf ("%02x", op->b_buf[i]);
+			}
+			printf ("\n");
 			if (core) {
-				RAsmCode *ac = r_asm_mdisassemble (core->assembler, op->b_buf, op->b_len);
-				printf ("%s\n", ac->buf_asm);
+				int len = R_MAX(4, op->b_len);
+				RAsmCode *ac = r_asm_mdisassemble (core->assembler, op->b_buf, len);
+				if (quiet) {
+					char *bufasm = r_str_prefix_all (strdup (ac->buf_asm), "+ ");
+					printf ("%s\n", bufasm);
+					free (bufasm);
+				} else {
+					char *bufasm = r_str_prefix_all (strdup (ac->buf_asm), Color_GREEN"+ ");
+					printf ("%s\n"Color_RESET, bufasm);
+					free (bufasm);
+				}
 				// r_asm_code_free (ac);
 			}
 		} else {
@@ -241,6 +274,7 @@ static int show_help(int v) {
 			"  -D         show disasm instead of hexpairs\n"
 			"  -e [k=v]   set eval config var value for all RCore instances\n"
 			"  -g [sym|off1,off2]   graph diff of given symbol, or between two offsets\n"
+			"  -G [cmd]   run an r2 command on every RCore instance created\n"
 			"  -i         diff imports of target files (see -u, -U and -z)\n"
 			"  -j         output in json format\n"
 			"  -n         print bare addresses only (diff.bare=1)\n"
@@ -372,6 +406,10 @@ static ut8 *slurp(RCore **c, const char *file, int *sz) {
 		if (!*c) {
 			*c = opencore (NULL);
 		}
+		if (!*c) {
+			eprintf ("opencore failed\n");
+			return NULL;
+		}
 		io = (*c)->io;
 		d = r_io_open (io, file, 0, 0);
 		if (!d) {
@@ -380,7 +418,7 @@ static ut8 *slurp(RCore **c, const char *file, int *sz) {
 		size = r_io_size (io);
 		if (size > 0 && size < ST32_MAX) {
 			data = calloc (1, size);
-			if (r_io_read_at (io, 0, data, size) == size) {
+			if (r_io_read_at (io, 0, data, size)) {
 				if (sz) {
 					*sz = size;
 				}
@@ -391,7 +429,7 @@ static ut8 *slurp(RCore **c, const char *file, int *sz) {
 		} else {
 			eprintf ("slurp: Invalid file size\n");
 		}
-		r_io_close (io, d);
+		r_io_desc_close (d);
 		return data;
 	}
 	return (ut8 *) r_file_slurp (file, sz);
@@ -502,7 +540,7 @@ int main(int argc, char **argv) {
 
 	evals = r_list_newf (NULL);
 
-	while ((o = getopt (argc, argv, "Aa:b:CDe:npg:OijrhcdsS:uUvVxt:zq")) != -1) {
+	while ((o = getopt (argc, argv, "Aa:b:CDe:npg:G:OijrhcdsS:uUvVxt:zq")) != -1) {
 		switch (o) {
 		case 'a':
 			arch = optarg;
@@ -525,6 +563,9 @@ int main(int argc, char **argv) {
 		case 'g':
 			mode = MODE_GRAPH;
 			addr = optarg;
+			break;
+		case 'G':
+			runcmd = optarg;
 			break;
 		case 'c':
 			showcount = 1;
@@ -636,7 +677,7 @@ int main(int argc, char **argv) {
 		r_anal_diff_setup_i (c2->anal, diffops, threshold, threshold);
 		if (pdc) {
 			if (!addr) {
-				addr = "entry0";
+				//addr = "entry0";
 				addr = "main";
 			}
 			/* should be in mode not in bool pdc */

@@ -23,22 +23,22 @@ CS_PATCHES=0
 else
 CS_TAR=
 CS_URL=$(GIT_PREFIX)github.com/aquynh/capstone.git
-CS_UPD=20170520
+CS_UPD=20170902
 CS_BRA=next
-CS_TIP=3e7dae8a2419281c1d783e8f6dbd12ac4c755033
+CS_TIP=596d31659c9e5b3f887c086c7a9a9bd27e048cc1
 # REVERT THIS COMMIT BECAUSE ITS WRONG
 CS_REV=
 CS_PATCHES=1
 endif
 
-.PHONY: capstone-sync capstone-build all clean mrproper libgdbr libwind bochs
+.PHONY: capstone-sync capstone-build all clean mrproper libgdbr libwindbg bochs
 
 HOST_CC?=gcc
 SHLR?=$(shell pwd)
 AR?=ar
 RANLIB?=ranlib
 MODS=sdb zip udis86 java tcc
-MODS+=gdb qnx
+MODS+=gdb qnx ar
 ifneq ($(CC),cccl)
 ifeq (1,$(WITH_GPL))
 MODS+=grub
@@ -58,14 +58,14 @@ all:
 	exit 1
 endif
 
-preall: targets libwind capstone-build bochs
+preall: targets libwindbg capstone-build bochs
 	@for MOD in ${MODS} ; do \
 		echo $(MAKE) -C $$MOD ; \
 		$(MAKE) -C $$MOD HAVE_VALA= ROOT="${PWD}/../" CC="${CC}" ; \
 	done
 
 SDBFILES=sdb/src/.sdb${EXT_EXE} sdb/sdb${EXT_EXE} sdb/src/.sdb sdb/sdb
-PREMODS=capstone gdb wind sdb bochs
+PREMODS=capstone gdb windbg sdb bochs ar
 
 clean mrproper:
 	rm -f ${SDBFILES}
@@ -132,15 +132,15 @@ endif
 	cp -f sdb/src/.sdb${BUILD_EXT_EXE} $@
 
 .PHONY: sdb-sync sync-sdb sdbclean
-F=README.md config.mk src Makefile Jamroot
+F=README.md config.mk src Makefile Jamroot meson.build msvc
 SYNCFILES=$(addprefix sdb.vc/,${F})
 I=../libr/include
 
 libgdbr:
 	$(MAKE) -C gdb all
 
-libwind:
-	$(MAKE) -C wind all
+libwindbg:
+	$(MAKE) -C windbg all
 
 bochs:
 	$(MAKE) -C bochs all

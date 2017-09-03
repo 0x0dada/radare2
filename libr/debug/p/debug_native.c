@@ -3,6 +3,7 @@
 #include <r_userconf.h>
 #include <r_debug.h>
 #include <r_asm.h>
+#include <r_core.h>
 #include <r_reg.h>
 #include <r_lib.h>
 #include <r_anal.h>
@@ -99,7 +100,7 @@ static void r_debug_native_stop(RDebug *dbg);
 #if !__APPLE__
 static int r_debug_handle_signals (RDebug *dbg) {
 #if __linux__
-	return linux_handle_signals (dbg, 0);
+	return linux_handle_signals (dbg);
 #else
 	return -1;
 #endif
@@ -167,7 +168,7 @@ static int r_debug_native_attach (RDebug *dbg, int pid) {
 	return linux_attach (dbg, pid);
 #elif __WINDOWS__ && !__CYGWIN__
 	int ret;
-	HANDLE process = w32_open_process (PROCESS_ALL_ACCESS, FALSE, pid);
+	HANDLE process = w32_OpenProcess (PROCESS_ALL_ACCESS, FALSE, pid);
 	if (process != (HANDLE)NULL && DebugActiveProcess (pid)) {
 		ret = w32_first_thread (pid);
 	} else {
@@ -195,7 +196,7 @@ static int r_debug_native_attach (RDebug *dbg, int pid) {
 
 static int r_debug_native_detach (RDebug *dbg, int pid) {
 #if __WINDOWS__ && !__CYGWIN__
-	return w32_detach (pid)? 0 : -1;
+	return w32_DebugActiveProcessStop (pid)? 0 : -1;
 #elif __CYGWIN__
 	#warning "r_debug_native_detach not supported on this platform"
 	return -1;
@@ -236,7 +237,7 @@ static int r_debug_native_continue(RDebug *dbg, int pid, int tid, int sig) {
 	DWORD continue_status = (sig == DBG_EXCEPTION_NOT_HANDLED)
 		? DBG_EXCEPTION_NOT_HANDLED : DBG_CONTINUE;
 	if (ContinueDebugEvent (pid, tid, continue_status) == 0) {
-		print_lasterr ((char *)__FUNCTION__, "ContinueDebugEvent");
+		r_sys_perror ("r_debug_native_continue/ContinueDebugEvent");
 		eprintf ("debug_contp: error\n");
 		return false;
 	}
@@ -252,7 +253,7 @@ static int r_debug_native_continue(RDebug *dbg, int pid, int tid, int sig) {
 	void *data = (void*)(size_t)((sig != -1) ? sig : dbg->reason.signum);
 	ut64 pc = r_debug_reg_get (dbg, "PC");
 	return ptrace (PTRACE_CONT, pid, (void*)(size_t)pc, (int)(size_t)data) == 0;
-#elif __CYGWIN__ 
+#elif __CYGWIN__
 	#warning "r_debug_native_continue not supported on this platform"
 	return -1;
 #else
@@ -265,8 +266,23 @@ static int r_debug_native_continue(RDebug *dbg, int pid, int tid, int sig) {
 	if (dbg->consbreak) {
 		r_cons_break_push ((RConsBreak)r_debug_native_stop, dbg);
 	}
-	int ret = ptrace (PTRACE_CONT, tid, NULL, contsig);
-	return ret >= 0 ? tid : false;
+
+	int ret = ptrace (PTRACE_CONT, pid, NULL, contsig);
+	if (dbg->continue_all_threads && dbg->n_threads) {
+		RList *list = dbg->threads;
+		RDebugPid *th;
+		RListIter *it;
+
+		if (list) {
+			r_list_foreach (list, it, th) {
+				if (th->pid && th->pid != pid) {
+					ptrace (PTRACE_CONT, tid, NULL, contsig);
+				}
+			}
+		}
+	}
+	//return ret >= 0 ? tid : false;
+	return tid;
 #endif
 }
 static RDebugInfo* r_debug_native_info (RDebug *dbg, const char *arg) {
@@ -301,7 +317,7 @@ static bool tracelib(RDebug *dbg, const char *mode, PLIB_ITEM item) {
 #endif
 
 /*
- * wait for an event and start trying to figure out what to do with it.
+ * Wait for an event and start trying to figure out what to do with it.
  *
  * Returns R_DEBUG_REASON_*
  */
@@ -318,11 +334,32 @@ static RDebugReasonType r_debug_native_wait (RDebug *dbg, int pid) {
 				reason = R_DEBUG_REASON_TRAP;
 			}
 			r_debug_info_free (r);
+
+			/* Check if autoload PDB is set, and load PDB information if yes */
+			RCore* core = dbg->corebind.core;
+			bool autoload_pdb = dbg->corebind.cfggeti (core, "pdb.autoload");
+			if (autoload_pdb) {
+				char* o_res = dbg->corebind.cmdstrf (core, "o %s", ((PLIB_ITEM)(r->lib))->Path);
+				// File exists since we loaded it, however the "o" command fails sometimes hence the while loop
+				while (*o_res == 0) {
+					o_res = dbg->corebind.cmdstrf (core, "o %s", ((PLIB_ITEM)(r->lib))->Path);
+				}
+				int fd = atoi (o_res);
+				dbg->corebind.cmdf (core, "o %d", fd);
+				char* pdb_path = dbg->corebind.cmdstr (core, "i~pdb");
+				if (*pdb_path == 0) {
+					eprintf ("Failure...\n");
+					dbg->corebind.cmd (core, "i");
+				} else {
+					pdb_path = strchr (pdb_path, ' ') + 1;
+					dbg->corebind.cmdf (core, ".idp* %s", pdb_path);
+				}
+				dbg->corebind.cmdf (core, "o-%d", fd);
+			}
 		} else {
 			eprintf ("Loading unknown library.\n");
 		}
-	}
-	else if (reason == R_DEBUG_REASON_EXIT_LIB) {
+	} else if (reason == R_DEBUG_REASON_EXIT_LIB) {
 		RDebugInfo *r = r_debug_native_info (dbg, "");
 		if (r && r->lib) {
 			if (tracelib (dbg, "unload", r->lib)) {
@@ -344,7 +381,7 @@ static RDebugReasonType r_debug_native_wait (RDebug *dbg, int pid) {
 		RDebugInfo *r = r_debug_native_info (dbg, "");
 		if (r && r->thread) {
 			PTHREAD_ITEM item = r->thread;
-			eprintf ("(%d) Finished thread %d Exit code %d\n", item->pid, item->tid, item->dwExitCode);
+			eprintf ("(%d) Finished thread %d Exit code %d\n", (ut32)item->pid, (ut32)item->tid, (ut32)item->dwExitCode);
 			r_debug_info_free (r);
 		}
 	}
@@ -355,12 +392,41 @@ static RDebugReasonType r_debug_native_wait (RDebug *dbg, int pid) {
 	}
 
 #if __APPLE__
-	// eprintf ("No waitpid here :D\n");
-	reason = xnu_wait (dbg, pid);
+	r_cons_break_push (NULL, NULL);
+	do {
+		reason = xnu_wait (dbg, pid);
+		if (reason == R_DEBUG_REASON_MACH_RCV_INTERRUPTED) {
+			if (r_cons_is_breaked ()) {
+				// Perhaps check the inferior is still alive,
+				// otherwise xnu_stop will fail.
+				reason = xnu_stop (dbg, pid)
+					? R_DEBUG_REASON_USERSUSP
+					: R_DEBUG_REASON_UNKNOWN;
+			} else {
+				// Weird; we'll retry the wait.
+				continue;
+			}
+		}
+		break;
+	} while (true);
+	r_cons_break_pop ();
 	status = reason? 1: 0;
 #else
 #if __linux__ && !defined (WAIT_ON_ALL_CHILDREN)
 	reason = linux_dbg_wait (dbg, dbg->tid);
+	if (reason == R_DEBUG_REASON_NEW_TID) {
+		RDebugInfo *r = r_debug_native_info (dbg, "");
+		if (r) {
+			eprintf ("(%d) Created thread %d\n", r->pid, r->tid);
+			r_debug_info_free (r);
+		}
+	} else if (reason == R_DEBUG_REASON_EXIT_TID) {
+		RDebugInfo *r = r_debug_native_info (dbg, "");
+		if (r) {
+			eprintf ("(%d) Finished thread %d Exit code\n", r->pid, r->tid);
+			r_debug_info_free (r);
+		}
+	}
 #else
 	// XXX: this is blocking, ^C will be ignored
 #ifdef WAIT_ON_ALL_CHILDREN
@@ -746,7 +812,6 @@ static int r_debug_native_reg_write (RDebug *dbg, int type, const ut8* buf, int 
 #elif __linux__
 		return linux_reg_write (dbg, type, buf, size);
 #elif __APPLE__
-		if (1) return false; //disable until fixed ?? know why this
 		return xnu_reg_write (dbg, type, buf, size);
 #else
 		//eprintf ("TODO: No support for write DRX registers\n");
@@ -875,7 +940,7 @@ static RDebugMap* r_debug_native_map_alloc (RDebug *dbg, ut64 addr, int size) {
 #elif __WINDOWS__ && !__CYGWIN__
 	RDebugMap *map = NULL;
 	LPVOID base = NULL;
-	HANDLE process = w32_open_process (PROCESS_ALL_ACCESS, FALSE, dbg->pid);
+	HANDLE process = w32_OpenProcess (PROCESS_ALL_ACCESS, FALSE, dbg->pid);
 	if (process == INVALID_HANDLE_VALUE) {
 		return map;
 	}
@@ -901,7 +966,7 @@ static int r_debug_native_map_dealloc (RDebug *dbg, ut64 addr, int size) {
 	return xnu_map_dealloc (dbg, addr, size);
 
 #elif __WINDOWS__ && !__CYGWIN__
-	HANDLE process = w32_open_process (PROCESS_ALL_ACCESS, FALSE, dbg->tid);
+	HANDLE process = w32_OpenProcess (PROCESS_ALL_ACCESS, FALSE, dbg->tid);
 	if (process == INVALID_HANDLE_VALUE) {
 		return false;
 	}
@@ -1043,7 +1108,7 @@ static RList *r_debug_native_map_get (RDebug *dbg) {
 			snprintf (name, sizeof (name), "unk%d", unk++);
 		}
 		perm = 0;
-		for (i = 0; perms[i] && i < 5; i++) {
+		for (i = 0; i < 5 && perms[i]; i++) {
 			switch (perms[i]) {
 			case 'r': perm |= R_IO_READ; break;
 			case 'w': perm |= R_IO_WRITE; break;
@@ -1134,8 +1199,8 @@ static RList *r_debug_native_modules_get (RDebug *dbg) {
 	return last;
 }
 
-static int r_debug_native_kill (RDebug *dbg, int pid, int tid, int sig) {
-	int ret = false;
+static bool r_debug_native_kill (RDebug *dbg, int pid, int tid, int sig) {
+	bool ret = false;
 	if (pid == 0) pid = dbg->pid;
 #if __WINDOWS__ && !__CYGWIN__
 	if (sig==0)
@@ -1179,23 +1244,9 @@ static int r_debug_native_init (RDebug *dbg) {
 #endif
 }
 
-#if __i386__ || __x86_64__
-// XXX: wtf cmon this  must use drx.c #if __linux__ too..
-static int drx_add (RDebug *dbg, ut64 addr, int rwx) {
-	// TODO
-	return false;
-}
-
-static int drx_del (RDebug *dbg, ut64 addr, int rwx) {
-	// TODO
-	return false;
-}
-#endif
-
 static int r_debug_native_drx (RDebug *dbg, int n, ut64 addr, int sz, int rwx, int g) {
 #if __i386__ || __x86_64__
 	drxt regs[8] = {0};
-
 	// sync drx regs
 #define R dbg->reg
 	regs[0] = r_reg_getv (R, "dr0");
@@ -1214,7 +1265,7 @@ static int r_debug_native_drx (RDebug *dbg, int n, ut64 addr, int sz, int rwx, i
 		drx_list ((drxt*)&regs);
 		return false;
 	}
-	if (sz<0) { // remove
+	if (sz < 0) { // remove
 		drx_set (regs, n, addr, -1, 0, 0);
 	} else {
 		drx_set (regs, n, addr, sz, rwx, g);
@@ -1225,6 +1276,7 @@ static int r_debug_native_drx (RDebug *dbg, int n, ut64 addr, int sz, int rwx, i
 	r_reg_setv (R, "dr3", regs[3]);
 	r_reg_setv (R, "dr6", regs[6]);
 	r_reg_setv (R, "dr7", regs[7]);
+
 	return true;
 #else
 	eprintf ("drx: Unsupported platform\n");
@@ -1238,25 +1290,24 @@ static int r_debug_native_drx (RDebug *dbg, int n, ut64 addr, int sz, int rwx, i
  * we only handle the case for hardware breakpoints here. otherwise,
  * we let the caller handle the work.
  */
-static int r_debug_native_bp (RBreakpointItem *bp, int set, void *user) {
-	if (!bp) return false;
+static int r_debug_native_bp (RBreakpoint *bp, RBreakpointItem *b, bool set) {
 #if __i386__ || __x86_64__
-	RDebug *dbg = user;
-
-	if (!bp->hw) return false;
-
-	return set?
-		drx_add (dbg, bp->addr, bp->rwx):
-		drx_del (dbg, bp->addr, bp->rwx);
+	RDebug *dbg = bp->user;
+	if (b && b->hw) {
+		return set
+		? drx_add (dbg, bp, b)
+		: drx_del (dbg, bp, b);
+	}
 #endif
 	return false;
 }
 
 #if __KFBSD__
+
 #include <sys/un.h>
 #include <arpa/inet.h>
-static void addr_to_string (struct sockaddr_storage *ss, char *buffer, int buflen) {
 
+static void addr_to_string (struct sockaddr_storage *ss, char *buffer, int buflen) {
 	char buffer2[INET6_ADDRSTRLEN];
 	struct sockaddr_in6 *sin6;
 	struct sockaddr_in *sin;
@@ -1267,7 +1318,7 @@ static void addr_to_string (struct sockaddr_storage *ss, char *buffer, int bufle
 	case AF_LOCAL:
 		sun = (struct sockaddr_un *)ss;
 		strncpy (buffer, (sun && *sun->sun_path)?
-			sun->sun_path: "-", buflen-1);
+			sun->sun_path: "-", buflen - 1);
 		break;
 	case AF_INET:
 		sin = (struct sockaddr_in *)ss;
@@ -1277,10 +1328,12 @@ static void addr_to_string (struct sockaddr_storage *ss, char *buffer, int bufle
 	case AF_INET6:
 		sin6 = (struct sockaddr_in6 *)ss;
 		if (inet_ntop (AF_INET6, &sin6->sin6_addr, buffer2,
-				sizeof (buffer2)) != NULL)
+				sizeof (buffer2)) != NULL) {
 			snprintf (buffer, buflen, "%s.%d", buffer2,
 				ntohs (sin6->sin6_port));
-		else strcpy (buffer, "-");
+		} else {
+			strcpy (buffer, "-");
+		}
 		break;
 	default:
 		*buffer = 0;
@@ -1342,8 +1395,8 @@ static RList *win_desc_list (int pid) {
 	NTSTATUS status;
 	ULONG handleInfoSize = 0x10000;
 	LPVOID buff;
-	if (!(processHandle=w32_openprocess(0x0040,FALSE,pid))) {
-		eprintf("win_desc_list: Error opening process.\n");
+	if (!(processHandle = w32_OpenProcess (0x0040, FALSE, pid))) {
+		eprintf ("win_desc_list: Error opening process.\n");
 		return NULL;
 	}
 	handleInfo = (PSYSTEM_HANDLE_INFORMATION)malloc(handleInfoSize);
@@ -1507,7 +1560,7 @@ static RList *r_debug_desc_native_list (int pid) {
 static int r_debug_native_map_protect (RDebug *dbg, ut64 addr, int size, int perms) {
 #if __WINDOWS__ && !__CYGWIN__
 	DWORD old;
-	HANDLE process = w32_open_process (PROCESS_ALL_ACCESS, FALSE, dbg->pid);
+	HANDLE process = w32_OpenProcess (PROCESS_ALL_ACCESS, FALSE, dbg->pid);
 	// TODO: align pointers
 	BOOL ret = VirtualProtectEx (WIN32_PI (process), (LPVOID)(UINT)addr,
 	  			size, perms, &old);
@@ -1516,10 +1569,39 @@ static int r_debug_native_map_protect (RDebug *dbg, ut64 addr, int size, int per
 #elif __APPLE__
 	return xnu_map_protect (dbg, addr, size, perms);
 #elif __linux__
-    // mprotect not implemented for this Linux.. contribs are welcome. use r_egg here?
+	RBuffer *buf = NULL;
+	char code[1024];
+	int num;
+
+	num = r_syscall_get_num (dbg->anal->syscall, "mprotect");
+	snprintf (code, sizeof (code),
+		"sc@syscall(%d);\n"
+		"main@global(0) { sc(%p,%d,%d);\n"
+		":int3\n"
+		"}\n", num, (void*)addr, size, perms);
+
+	r_egg_reset (dbg->egg);
+	r_egg_setup(dbg->egg, dbg->arch, 8 * dbg->bits, 0, 0);
+	r_egg_load (dbg->egg, code, 0);
+	if (!r_egg_compile (dbg->egg)) {
+		eprintf ("Cannot compile.\n");
+		return false;
+	}
+	if (!r_egg_assemble (dbg->egg)) {
+		eprintf ("r_egg_assemble: invalid assembly\n");
+		return false;
+	}
+	buf = r_egg_get_bin (dbg->egg);
+	if (buf) {
+		r_reg_arena_push (dbg->reg);
+		r_debug_execute (dbg, buf->buf, buf->length , 1);
+		r_reg_arena_pop (dbg->reg);
+		return true;
+	}
+
 	return false;
 #else
-    // mprotect not implemented for this platform
+	// mprotect not implemented for this platform
 	return false;
 #endif
 }
@@ -1637,6 +1719,5 @@ RLibStruct radare_plugin = {
 RDebugPlugin r_debug_plugin_native = {
 	NULL // .name = "native",
 };
-
 
 #endif // DEBUGGER

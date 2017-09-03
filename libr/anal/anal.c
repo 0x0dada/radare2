@@ -4,7 +4,7 @@
 #include <r_util.h>
 #include <r_list.h>
 #include <r_io.h>
-#include "../config.h"
+#include <config.h>
 
 R_LIB_VERSION(r_anal);
 
@@ -136,7 +136,6 @@ R_API RAnal *r_anal_free(RAnal *a) {
 	r_anal_op_free (a->queued);
 	r_list_free (a->bits_ranges);
 	a->sdb = NULL;
-	r_syscall_free (a->syscall);
 	sdb_ns_free (a->sdb);
 	if (a->esil) {
 		r_anal_esil_free (a->esil);
@@ -173,28 +172,30 @@ R_API bool r_anal_use(RAnal *anal, const char *name) {
 	RListIter *it;
 	RAnalPlugin *h;
 
-	bool change = anal && anal->cur && strcmp (anal->cur->name, name);
-	r_list_foreach (anal->plugins, it, h) {
-		if (!strcmp (h->name, name)) {
-#if 0
-			// regression happening here for asm.emu
-			if (anal->cur && anal->cur == h) {
+	if (anal) {
+		bool change = anal->cur && strcmp (anal->cur->name, name);
+		r_list_foreach (anal->plugins, it, h) {
+			if (!strcmp (h->name, name)) {
+	#if 0
+				// regression happening here for asm.emu
+				if (anal->cur && anal->cur == h) {
+					return true;
+				}
+	#endif
+				anal->cur = h;
+				r_anal_set_reg_profile (anal);
+				if (change) {
+					r_anal_set_fcnsign (anal, NULL);
+				}
+	#if 1
+				/* invalidate esil state? really ? */
+				if (anal->esil) {
+					r_anal_esil_free (anal->esil);
+					anal->esil = NULL;
+				}
+	#endif
 				return true;
 			}
-#endif
-			anal->cur = h;
-			r_anal_set_reg_profile (anal);
-			if (change) {
-				r_anal_set_fcnsign (anal, NULL);
-			}
-#if 1
-			/* invalidate esil state? really ? */
-			if (anal->esil) {
-				r_anal_esil_free (anal->esil);
-				anal->esil = NULL;
-			}
-#endif
-			return true;
 		}
 	}
 	return false;
@@ -269,6 +270,7 @@ R_API bool r_anal_set_bits(RAnal *anal, int bits) {
 	switch (bits) {
 	case 8:
 	case 16:
+	case 27:
 	case 32:
 	case 64:
 		if (anal->bits != bits) {

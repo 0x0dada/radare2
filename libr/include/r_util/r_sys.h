@@ -1,6 +1,11 @@
 #ifndef R_SYS_H
 #define R_SYS_H
+
 #include <r_list.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 enum {
 	R_SYS_BITS_8 = 1,
@@ -13,7 +18,7 @@ R_API char **r_sys_get_environ(void);
 R_API void r_sys_set_environ(char **e);
 R_API ut64 r_sys_now(void);
 R_API int r_sys_fork(void);
-R_API int r_sys_stop(void);
+R_API bool r_sys_stop(void);
 R_API char *r_sys_pid_to_path(int pid);
 R_API int r_sys_run(const ut8 *buf, int len);
 R_API int r_sys_getpid(void);
@@ -58,5 +63,9 @@ R_API char *r_syscmd_ls(const char *input);
 R_API char *r_syscmd_cat(const char *file);
 R_API char *r_syscmd_mkdir(const char *dir);
 R_API bool r_syscmd_mv(const char *input);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif //  R_SYS_H

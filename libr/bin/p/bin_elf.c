@@ -40,7 +40,7 @@ static Sdb* get_sdb(RBinFile *bf) {
 	return NULL;
 }
 
-static void * load_bytes(RBinFile *arch, const ut8 *buf, ut64 sz, ut64 loadaddr, Sdb *sdb){
+static void * load_bytes(RBinFile *arch, const ut8 *buf, ut64 sz, ut64 loadaddr, Sdb *sdb) {
 	struct Elf_(r_bin_elf_obj_t) *res;
 	char *elf_type;
 	RBuffer *tbuf;
@@ -71,7 +71,6 @@ static void * load_bytes(RBinFile *arch, const ut8 *buf, ut64 sz, ut64 loadaddr,
 	return res;
 }
 
-/* TODO: must return bool */
 static bool load(RBinFile *arch) {
 	const ut8 *bytes = arch ? r_buf_buffer (arch->buf) : NULL;
 	ut64 sz = arch ? r_buf_size (arch->buf): 0;
@@ -222,11 +221,11 @@ static RList* sections(RBinFile *arch) {
 			if (strstr (ptr->name, "data") && !strstr (ptr->name, "rel")) {
 				ptr->is_data = true;
 			}
-			ptr->size = section[i].size;
+			ptr->size = section[i].type != SHT_NOBITS ? section[i].size : 0;
 			ptr->vsize = section[i].size;
 			ptr->paddr = section[i].offset;
 			ptr->vaddr = section[i].rva;
-			ptr->add = true;
+			ptr->add = false;
 			ptr->srwx = 0;
 			if (R_BIN_ELF_SCN_IS_EXECUTABLE (section[i].flags)) {
 				ptr->srwx |= R_BIN_SCN_EXECUTABLE;
@@ -330,7 +329,7 @@ static RList* sections(RBinFile *arch) {
 		ptr->vaddr = obj->baddr;
 		ptr->size = ehdr_size;
 		ptr->vsize = ehdr_size;
-		ptr->add = true;
+		ptr->add = false;
 		if (obj->ehdr.e_type == ET_REL) {
 			ptr->add = true;
 		}
@@ -700,13 +699,13 @@ static RList* patch_relocs(RBin *b) {
 	RBinObject *obj = NULL;
 	struct Elf_(r_bin_elf_obj_t) *bin = NULL;
 	RIOSection *g = NULL, *s = NULL;
-	RListIter *iter;
+	SdbListIter *iter;
 	RBinElfReloc *relcs = NULL;
 	int i;
 	ut64 n_off, n_vaddr, vaddr, size, sym_addr = 0, offset = 0;
 	if (!b)
 		return NULL;
-	io = b->iob.get_io(&b->iob);
+	io = b->iob.io;
 	if (!io || !io->desc)
 		return NULL;
 	obj = r_bin_cur_object (b);
@@ -721,7 +720,7 @@ static RList* patch_relocs(RBin *b) {
 	   	eprintf ("Warning: run r2 with -e io.cache=true to fix relocations in disassembly\n");
 		return relocs (r_bin_cur (b));
 	}
-	r_list_foreach (io->sections, iter, s) {
+	ls_foreach (io->sections, iter, s) {
 		if (s->paddr > offset) {
 			offset = s->paddr;
 			g = s;
@@ -768,15 +767,15 @@ static RList* patch_relocs(RBin *b) {
 	return ret;
 }
 
-static int has_canary(RBinFile *arch) {
-	int ret = 0;
+static bool has_canary(RBinFile *arch) {
+	bool ret = false;
 	RList* imports_list = imports (arch);
 	RListIter *iter;
 	RBinImport *import;
 	if (imports_list) {
 		r_list_foreach (imports_list, iter, import) {
 			if (!strcmp (import->name, "__stack_chk_fail") ) {
-				ret = 1;
+				ret = true;
 				break;
 			}
 		}
@@ -800,13 +799,16 @@ static RBinInfo* info(RBinFile *arch) {
 	if ((str = Elf_(r_bin_elf_get_rpath)(arch->o->bin_obj))) {
 		ret->rpath = strdup (str);
 		free (str);
-	} else ret->rpath = strdup ("NONE");
+	} else {
+		ret->rpath = strdup ("NONE");
+	}
 	if (!(str = Elf_(r_bin_elf_get_file_type) (arch->o->bin_obj))) {
 		free (ret);
 		return NULL;
 	}
 	ret->type = str;
 	ret->has_pi = (strstr (str, "DYN"))? 1: 0;
+	ret->has_lit = true;
 	ret->has_canary = has_canary (arch);
 	if (!(str = Elf_(r_bin_elf_get_elf_class) (arch->o->bin_obj))) {
 		free (ret);

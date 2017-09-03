@@ -11,6 +11,7 @@ OBJS+=hack.o vasm.o patch.o cbin.o log.o rtr.o cmd_api.o
 OBJS+=canal.o project.o gdiff.o asm.o vmenus.o disasm.o plugin.o
 OBJS+=help.o task.o panels.o pseudo.o vmarks.o anal_tp.o blaze.o
 
+CFLAGS+=-I../../shlr/heap/include
 CFLAGS+=-DCORELIB -I../../shlr
 LDFLAGS+=${DL_LIBS}
 
@@ -32,6 +33,7 @@ OBJS+=$(STATIC_OBJS)
 
 #STATIC_OBJS=$(subst ..,p/..,$(subst core_,p/core_,$(STATIC_OBJ)))
 
+include $(TOP)/shlr/gdb/deps.mk
 include $(LTOP)/rules.mk
 
 # include plugins

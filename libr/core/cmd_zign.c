@@ -7,13 +7,83 @@
 #include <r_cons.h>
 #include <r_util.h>
 
+static const char *help_msg_z[] = {
+	"Usage:", "z[*j-aof/cs] [args] ", "# Manage zignatures",
+	"z", "", "show zignatures",
+	"z*", "", "show zignatures in radare format",
+	"zj", "", "show zignatures in json format",
+	"z-", "zignature", "delete zignature",
+	"z-", "*", "delete all zignatures",
+	"za", "[?]", "add zignature",
+	"zo", "[?]", "manage zignature files",
+	"zf", "[?]", "manage FLIRT signatures",
+	"z/", "[?]", "search zignatures",
+	"zc", "", "check zignatures at address",
+	"zs", "[?]", "manage zignspaces",
+	NULL
+};
+
+static const char *help_msg_z_slash[] = {
+	"Usage:", "z/[*] ", "# Search signatures (see 'e?search' for options)",
+	"z/ ", "", "search zignatures on range and flag matches",
+	"z/* ", "", "search zignatures on range and output radare commands",
+	NULL
+};
+
+static const char *help_msg_za[] = {
+	"Usage:", "za[fF?] [args] ", "# Add zignature",
+	"za ", "zigname type params", "add zignature",
+	"zaf ", "[fcnname] [zigname]", "create zignature for function",
+	"zaF ", "", "generate zignatures for all functions",
+	"za?? ", "", "show extended help",
+	NULL
+};
+
+static const char *help_msg_zf[] = {
+	"Usage:", "zf[dsz] filename ", "# Manage FLIRT signatures",
+	"zfd ", "filename", "open FLIRT file and dump",
+	"zfs ", "filename", "open FLIRT file and scan",
+	"zfz ", "filename", "open FLIRT file and get sig commands (zfz flirt_file > zignatures.sig)",
+	NULL
+};
+
+static const char *help_msg_zo[] = {
+	"Usage:", "zo[zs] filename ", "# Manage zignature files (see dir.zigns)",
+	"zo ", "filename", "load zinatures from sdb file",
+	"zoz ", "filename", "load zinatures from gzipped sdb file",
+	"zos ", "filename", "save zignatures to sdb file (merge if file exists)",
+	NULL
+};
+
+static const char *help_msg_zs[] = {
+	"Usage:", "zs[+-*] [namespace] ", "# Manage zignspaces",
+	"zs", "", "display zignspaces",
+	"zs ", "zignspace", "select zignspace",
+	"zs ", "*", "select all zignspaces",
+	"zs-", "zignspace", "delete zignspace",
+	"zs-", "*", "delete all zignspaces",
+	"zs+", "zignspace", "push previous zignspace and set",
+	"zs-", "", "pop to the previous zignspace",
+	"zsr ", "newname", "rename selected zignspace",
+	NULL
+};
+
+static void cmd_zign_init(RCore *core) {
+	DEFINE_CMD_DESCRIPTOR (core, z);
+	DEFINE_CMD_DESCRIPTOR_SPECIAL (core, z/, z_slash);
+	DEFINE_CMD_DESCRIPTOR (core, za);
+	DEFINE_CMD_DESCRIPTOR (core, zf);
+	DEFINE_CMD_DESCRIPTOR (core, zo);
+	DEFINE_CMD_DESCRIPTOR (core, zs);
+}
+
 static bool addFcnBytes(RCore *core, RAnalFunction *fcn, const char *name) {
 	if (!core || !fcn || !name) {
 		return false;
 	}
 	int maxsz = r_config_get_i (core->config, "zign.maxsz");
 	int fcnlen = r_anal_fcn_realsize (fcn);
-	int len = R_MIN (fcnlen, maxsz);
+	int len = R_MIN (core->assembler->addrbytes * fcnlen, maxsz);
 
 	ut8 *buf = malloc (len);
 	if (!buf) {
@@ -21,13 +91,14 @@ static bool addFcnBytes(RCore *core, RAnalFunction *fcn, const char *name) {
 	}
 
 	bool retval = false;
-	if (r_io_read_at (core->io, fcn->addr, buf, len) != len) {
+	if (!r_io_is_valid_offset (core->io, fcn->addr, 0)) {
 		eprintf ("error: cannot read at 0x%08"PFMT64x"\n", fcn->addr);
-		goto exit_function;
+		goto out;
 	}
+	(void)r_io_read_at (core->io, fcn->addr, buf, len);
 	retval = r_sign_add_anal (core->anal, name, len, buf, fcn->addr);
 
-exit_function:
+out:
 	free (buf);
 
 	return retval;
@@ -119,7 +190,7 @@ static bool addBytesZign(RCore *core, const char *name, int type, const char *ar
 	if (nargs != 1) {
 		eprintf ("error: invalid syntax\n");
 		retval = false;
-		goto exit_function;
+		goto out;
 	}
 
 	hexbytes = r_str_word_get0 (args0, 0);
@@ -131,7 +202,7 @@ static bool addBytesZign(RCore *core, const char *name, int type, const char *ar
 	if (size <= 0) {
 		eprintf ("error: cannot parse hexpairs\n");
 		retval = false;
-		goto exit_function;
+		goto out;
 	}
 
 	switch (type) {
@@ -143,7 +214,7 @@ static bool addBytesZign(RCore *core, const char *name, int type, const char *ar
 		break;
 	}
 
-exit_function:
+out:
 	free (bytes);
 	free (mask);
 
@@ -217,7 +288,7 @@ static int cmdAdd(void *data, const char *input) {
 			if (n < 3) {
 				eprintf ("usage: za zigname type params\n");
 				retval = false;
-				goto exit_case_manual;
+				goto out_case_manual;
 			}
 
 			zigname = r_str_word_get0 (args, 0);
@@ -226,10 +297,10 @@ static int cmdAdd(void *data, const char *input) {
 
 			if (!addZign (core, zigname, type, args0, n - 2)) {
 				retval = false;
-				goto exit_case_manual;
+				goto out_case_manual;
 			}
 
-exit_case_manual:
+out_case_manual:
 			free (args);
 			return retval;
 		}
@@ -249,7 +320,7 @@ exit_case_manual:
 			if (n > 2) {
 				eprintf ("usage: zaf [fcnname] [zigname]\n");
 				retval = false;
-				goto exit_case_fcn;
+				goto out_case_fcn;
 			}
 
 			switch (n) {
@@ -272,7 +343,7 @@ exit_case_manual:
 			}
 			r_cons_break_pop ();
 
-exit_case_fcn:
+out_case_fcn:
 			free (args);
 			return retval;
 		}
@@ -297,6 +368,7 @@ exit_case_fcn:
 		break;
 	case '?':
 		if (input[1] == '?') {
+			// TODO #7967 help refactor: move to detail
 			r_cons_printf ("Adding Zignatures (examples and documentation)\n\n"
 				"Zignature types:\n"
 				"  b: bytes pattern\n"
@@ -319,14 +391,7 @@ exit_case_fcn:
 				"  za foo o 0x08048123\n"
 				"  za foo r sym.imp.strcpy sym.imp.sprintf sym.imp.strlen\n");
 		} else {
-			const char *help_msg[] = {
-				"Usage:", "za[fF?] [args] ", "# Add zignature",
-				"za ", "zigname type params", "add zignature",
-				"zaf ", "[fcnname] [zigname]", "create zignature for function",
-				"zaF ", "", "generate zignatures for all functions",
-				"za?? ", "", "show extended help",
-				NULL};
-			r_core_cmd_help (core, help_msg);
+			r_core_cmd_help (core, help_msg_za);
 		}
 		break;
 	default:
@@ -343,45 +408,47 @@ static bool loadGzSdb(RAnal *a, const char *filename) {
 	char *tmpfile = NULL;
 	bool retval = true;
 
-	if (!r_file_exists (filename)) {
+	char *path = r_sign_path (a, filename);
+	if (!r_file_exists (path)) {
 		eprintf ("error: file %s does not exist\n", filename);
 		retval = false;
-		goto exit_function;
+		goto out;
 	}
 
-	if (!(buf = r_file_gzslurp (filename, &size, 0))) {
+	if (!(buf = r_file_gzslurp (path, &size, 0))) {
 		eprintf ("error: cannot decompress file\n");
 		retval = false;
-		goto exit_function;
+		goto out;
 	}
 
 	if (!(tmpfile = r_file_temp ("r2zign"))) {
 		eprintf ("error: cannot create temp file\n");
 		retval = false;
-		goto exit_function;
+		goto out;
 	}
 
 	if (!r_file_dump (tmpfile, buf, size, 0)) {
 		eprintf ("error: cannot dump file\n");
 		retval = false;
-		goto exit_function;
+		goto out;
 	}
 
 	if (!r_sign_load (a, tmpfile)) {
 		eprintf ("error: cannot load file\n");
 		retval = false;
-		goto exit_function;
+		goto out;
 	}
 
 	if (!r_file_rm (tmpfile)) {
 		eprintf ("error: cannot delete temp file\n");
 		retval = false;
-		goto exit_function;
+		goto out;
 	}
 
-exit_function:
+out:
 	free (buf);
 	free (tmpfile);
+	free (path);
 
 	return retval;
 }
@@ -409,16 +476,7 @@ static int cmdOpen(void *data, const char *input) {
 		eprintf ("usage: zoz filename\n");
 		return false;
 	case '?':
-		{
-			const char *help_msg[] = {
-				"Usage:", "zo[zs] filename ", "# Manage zignature files (see dir.zignatures)",
-				"zo ", "filename", "load zinatures from sdb file",
-				"zoz ", "filename", "load zinatures from gzipped sdb file",
-				"zos ", "filename", "save zignatures to sdb file (merge if file exists)",
-				NULL
-			};
-			r_core_cmd_help (core, help_msg);
-		}
+		r_core_cmd_help (core, help_msg_zo);
 		break;
 	default:
 		eprintf ("usage: zo[zs] filename\n");
@@ -469,20 +527,7 @@ static int cmdSpace(void *data, const char *input) {
 		r_space_set (zs, input + 1);
 		break;
 	case '?':
-		{
-			const char *help_msg[] = {
-				"Usage:", "zs[+-*] [namespace] ", "# Manage zignspaces",
-				"zs", "", "display zignspaces",
-				"zs ", "zignspace", "select zignspace",
-				"zs ", "*", "select all zignspaces",
-				"zs-", "zignspace", "delete zignspace",
-				"zs-", "*", "delete all zignspaces",
-				"zs+", "zignspace", "push previous zignspace and set",
-				"zs-", "", "pop to the previous zignspace",
-				"zsr ", "newname", "rename selected zignspace",
-				NULL};
-			r_core_cmd_help (core, help_msg);
-		}
+		r_core_cmd_help (core, help_msg_zs);
 		break;
 	default:
 		eprintf ("usage: zs[+-*] [namespace]\n");
@@ -516,15 +561,7 @@ static int cmdFlirt(void *data, const char *input) {
 		// TODO
 		break;
 	case '?':
-		{
-			const char *help_msg[] = {
-				"Usage:", "zf[dsz] filename ", "# Manage FLIRT signatures",
-				"zfd ", "filename", "open FLIRT file and dump",
-				"zfs ", "filename", "open FLIRT file and scan",
-				"zfz ", "filename", "open FLIRT file and get sig commands (zfz flirt_file > zignatures.sig)",
-				NULL};
-			r_core_cmd_help (core, help_msg);
-		}
+		r_core_cmd_help (core, help_msg_zf);
 		break;
 	default:
 		eprintf ("usage: zf[dsz] filename\n");
@@ -590,10 +627,11 @@ static bool searchRange(RCore *core, ut64 from, ut64 to, bool rad, struct ctxSea
 			break;
 		}
 		rlen = R_MIN (core->blocksize, to - at);
-		if (!r_io_read_at (core->io, at, buf, rlen)) {
+		if (!r_io_is_valid_offset (core->io, at, 0)) {
 			retval = false;
 			break;
 		}
+		(void)r_io_read_at (core->io, at, buf, rlen);
 		if (r_sign_search_update (core->anal, ss, &at, buf, rlen) == -1) {
 			eprintf ("search: update read error at 0x%08"PFMT64x"\n", at);
 			retval = false;
@@ -698,14 +736,7 @@ static int cmdSearch(void *data, const char *input) {
 	case '*':
 		return search (core, input[0] == '*');
 	case '?':
-		{
-			const char *help_msg[] = {
-				"Usage:", "z/[*] ", "# Search signatures (see 'e?search' for options)",
-				"z/ ", "", "search zignatures on range and flag matches",
-				"z/* ", "", "search zignatures on range and output radare commands",
-				NULL};
-			r_core_cmd_help (core, help_msg);
-		}
+		r_core_cmd_help (core, help_msg_z_slash);
 		break;
 	default:
 		eprintf ("usage: z/[*]\n");
@@ -824,24 +855,7 @@ static int cmd_zign(void *data, const char *input) {
 	case 's':
 		return cmdSpace (data, input + 1);
 	case '?':
-		{
-			const char* help_msg[] = {
-				"Usage:", "z[*j-aof/cs] [args] ", "# Manage zignatures",
-				"z", "", "show zignagures",
-				"z*", "", "show zignatures in radare format",
-				"zj", "", "show zignatures in json format",
-				"z-", "zignature", "delete zignature",
-				"z-", "*", "delete all zignatures",
-				"za", "[?]", "add zignature",
-				"zo", "[?]", "manage zignature files",
-				"zf", "[?]", "manage FLIRT signatures",
-				"z/", "[?]", "search zignatures",
-				"zc", "", "check zignatures at address",
-				"zs", "[?]", "manage zignspaces",
-				NULL
-			};
-			r_core_cmd_help (core, help_msg);
-		}
+		r_core_cmd_help (core, help_msg_z);
 		break;
 	default:
 		eprintf ("usage: z[*j-aof/cs] [args]\n");

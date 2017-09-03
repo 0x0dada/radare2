@@ -1,4 +1,4 @@
-/* radare2 - LGPL - Copyright 2013-2016 - pancake */
+/* radare2 - LGPL - Copyright 2013-2017 - pancake */
 
 #include <r_anal.h>
 #include <r_lib.h>
@@ -1625,6 +1625,7 @@ static void anop(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int len, csh 
 		.bits = a->bits
 	};
 	int regsz = 4;
+	static RRegItem regs[2];
 	switch (a->bits) {
 	case 64: regsz = 8; break;
 	case 16: regsz = 2; break;
@@ -1845,14 +1846,16 @@ static void anop(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int len, csh 
 		op->ptr = UT64_MAX;
 
 		op->src[0] = r_anal_value_new ();
-		op->src[0]->reg = R_NEW0 (RRegItem);
+		ZERO_FILL (regs[1]);
+		op->src[0]->reg = &regs[1];
 		op->dst = r_anal_value_new ();
 
 		parse_reg_name_mov (op->src[0]->reg, &gop.handle, insn, 1);
 
 		switch (INSOP(0).type) {
 		case X86_OP_MEM:
-			op->dst->reg = R_NEW0 (RRegItem);
+			ZERO_FILL (regs[1]);
+			op->dst->reg = &regs[0];
 			parse_reg_name_mov (op->dst->reg, &gop.handle, insn, 0);
 
 			op->cycles = CYCLE_MEM;
@@ -1999,9 +2002,11 @@ static void anop(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int len, csh 
 	case X86_INS_LEA:
 		op->type = R_ANAL_OP_TYPE_LEA;
 		op->src[0] = r_anal_value_new ();
-		op->src[0]->reg = R_NEW0 (RRegItem);
+		ZERO_FILL (regs[1]);
+		op->src[0]->reg = &regs[1];
 		op->dst = r_anal_value_new ();
-		op->dst->reg = R_NEW0 (RRegItem);
+		ZERO_FILL (regs[0]);
+		op->dst->reg = &regs[0];
 
 		parse_reg_name_lea (op->src[0]->reg, &gop.handle, insn, 1);
 		parse_reg_name_mov (op->dst->reg, &gop.handle, insn, 0);
@@ -2055,7 +2060,6 @@ static void anop(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int len, csh 
 			break;
 		default:
 			op->type = R_ANAL_OP_TYPE_UPUSH;
-			op->cycles = 1;
 			op->cycles = CYCLE_MEM + CYCLE_MEM;
 			break;
 		}
@@ -2455,6 +2459,19 @@ static void anop(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int len, csh 
 	case X86_INS_SUBSD:    //cvtss2sd
 	case X86_INS_CVTSS2SD: //cvtss2sd
 		break;
+	}
+	if (cs_insn_group (*handle, insn, X86_GRP_MMX)) {
+		op->family = R_ANAL_OP_FAMILY_MMX;
+	}
+	// TODO: add SSE* families?
+	if (cs_insn_group (*handle, insn, X86_GRP_SSE1)) {
+		op->family = R_ANAL_OP_FAMILY_SSE;
+	}
+	if (cs_insn_group (*handle, insn, X86_GRP_SSE2)) {
+		op->family = R_ANAL_OP_FAMILY_SSE;
+	}
+	if (cs_insn_group (*handle, insn, X86_GRP_SSE3)) {
+		op->family = R_ANAL_OP_FAMILY_SSE;
 	}
 }
 

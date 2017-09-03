@@ -135,6 +135,7 @@ R_API RReg *r_reg_new(void);
 R_API int r_reg_set_name(RReg *reg, int role, const char *name);
 R_API int r_reg_set_profile_string(RReg *reg, const char *profile);
 R_API int r_reg_set_profile(RReg *reg, const char *profile);
+R_API int r_reg_parse_gdb_profile(const char *profile);
 
 R_API RRegSet *r_reg_regset_get(RReg *r, int type);
 R_API ut64 r_reg_getv(RReg *reg, const char *name);
@@ -166,8 +167,10 @@ R_API int r_reg_cond(RReg *r, int type);
 
 /* integer value 8-64 bits */
 R_API ut64 r_reg_get_value(RReg *reg, RRegItem *item);
-R_API bool r_reg_set_value(RReg *reg, RRegItem *item, ut64 value);
 R_API ut64 r_reg_get_value_big(RReg *reg, RRegItem *item, utX *val);
+R_API ut64 r_reg_get_value_by_role(RReg *reg, RRegisterId role);
+R_API bool r_reg_set_value(RReg *reg, RRegItem *item, ut64 value);
+R_API bool r_reg_set_value_by_role(RReg *reg, RRegisterId role, ut64 value);
 
 /* float */
 R_API float r_reg_get_float(RReg *reg, RRegItem *item);

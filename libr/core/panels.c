@@ -1,4 +1,4 @@
-/* Copyright radare2 2014-2016 - Author: pancake */
+/* Copyright radare2 2014-2017 - Author: pancake */
 
 // pls move the typedefs into roons and rename it -> RConsPanel
 
@@ -406,10 +406,12 @@ static void r_core_panels_refresh(RCore *core) {
 		curnode = menu_pos;
 	}
 	// redraw current node to make it appear on top
-	if (curnode >= 0) {
-		Panel_print (can, &panels[curnode], 1);
+	if (panels) {
+		if (curnode >= 0) {
+			Panel_print (can, &panels[curnode], 1);
+		}
+		Panel_print (can, &panels[menu_pos], menu_y);
 	}
-	Panel_print (can, &panels[menu_pos], menu_y);
 
 	(void) G (-can->sx, -can->sy);
 	title[0] = 0;
@@ -888,6 +890,7 @@ repeat:
 			menu_x = 0;
 		}
 		break;
+	case 'Z': // SHIFT-TAB
 	case 'K':
 		menu_y = 0;
 		menu_x = -1;

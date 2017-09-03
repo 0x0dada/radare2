@@ -7,6 +7,66 @@
 #include "r_debug.h"
 #include "r_io.h"
 
+static const char *help_msg_s[] = {
+	"Usage: s", "", " # Help for the seek commands. See ?$? to see all variables",
+	"s", "", "Print current address",
+	"s:", "pad", "Print current address with N padded zeros (defaults to 8)",
+	"s", " addr", "Seek to address",
+	"s-", "", "Undo seek",
+	"s-*", "", "Reset undo seek history",
+	"s-", " n", "Seek n bytes backward",
+	"s--", "[n]", "Seek blocksize bytes backward (/=n)",
+	"s+", "", "Redo seek",
+	"s+", " n", "Seek n bytes forward",
+	"s++", "[n]", "Seek blocksize bytes forward (/=n)",
+	"s[j*=!]", "", "List undo seek history (JSON, =list, *r2, !=names, s==)",
+	"s/", " DATA", "Search for next occurrence of 'DATA'",
+	"s/x", " 9091", "Search for next occurrence of \\x90\\x91",
+	"s.", "hexoff", "Seek honoring a base from core->offset",
+	"sa", " [[+-]a] [asz]", "Seek asz (or bsize) aligned to addr",
+	"sb", "", "Seek aligned to bb start",
+	"sC", "[?] string", "Seek to comment matching given string",
+	"sf", "", "Seek to next function (f->addr+f->size)",
+	"sf", " function", "Seek to address of specified function",
+	"sg/sG", "", "Seek begin (sg) or end (sG) of section or file",
+	"sl", "[?] [+-]line", "Seek to line",
+	"sn/sp", "", "Seek to next/prev location, as specified by scr.nkey",
+	"so", " [N]", "Seek to N next opcode(s)",
+	"sr", " pc", "Seek to register",
+	"ss", "", "Seek silently (without adding an entry to the seek history)",
+	// "sp [page]  seek page N (page = block)",
+	NULL
+};
+
+static const char *help_msg_sC[] = {
+	"Usage:", "sC", "Comment grep",
+	"sC", "*", "List all comments",
+	"sC", " str", "Seek to the first comment matching 'str'",
+	NULL
+};
+
+static const char *help_msg_sl[] = {
+	"Usage:", "sl+ or sl- or slc", "",
+	"sl", " [line]", "Seek to absolute line",
+	"sl", "[+-][line]", "Seek to relative line",
+	"slc", "", "Clear line cache",
+	"sll", "", "Show total number of lines",
+	NULL
+};
+
+static const char *help_msg_ss[] = {
+	"Usage: ss", "", " # Seek silently (not recorded in the seek history)",
+	"s?", "", "Works with all s subcommands",
+	NULL
+};
+
+static void cmd_seek_init(RCore *core) {
+	DEFINE_CMD_DESCRIPTOR (core, s);
+	DEFINE_CMD_DESCRIPTOR (core, sC);
+	DEFINE_CMD_DESCRIPTOR (core, sl);
+	DEFINE_CMD_DESCRIPTOR (core, ss);
+}
+
 static void __init_seek_line(RCore *core) {
 	ut64 from, to;
 
@@ -94,10 +154,13 @@ R_API int r_core_lines_initcache(RCore *core, ut64 start_addr, ut64 end_addr) {
 		return -1;
 	}
 
+#if 0	//review this
 	{
 		RIOSection *s = r_io_section_mget_in (core->io, core->offset);
 		baddr = s? s->paddr: r_config_get_i (core->config, "bin.baddr");
 	}
+#endif
+	baddr = r_config_get_i (core->config, "bin.baddr");
 
 	line_count = start_addr? 0: 1;
 	core->print->lines_cache[0] = start_addr? 0: baddr;
@@ -199,12 +262,7 @@ static int cmd_seek(void *data, const char *input) {
 		silent = true;
 		input++;
 		if (*input == '?') {
-			const char *help_message[] = {
-				"Usage: ss", "", " # Seek silently (not recorded in the seek history)",
-				"s?", "", "Works with all s subcommands",
-				NULL
-			};
-			r_core_cmd_help (core, help_message);
+			r_core_cmd_help (core, help_msg_ss);
 			return 0;
 		}
 	}
@@ -282,13 +340,7 @@ static int cmd_seek(void *data, const char *input) {
 			}
 			free (cb.str);
 		} else {
-			const char *help_msg[] = {
-				"Usage:", "sC", "Comment grep",
-				"sC", "*", "List all comments",
-				"sC", " str", "Seek to the first comment matching 'str'",
-				NULL
-			};
-			r_core_cmd_help (core, help_msg);
+			r_core_cmd_help (core, help_msg_sC);
 		}
 		break;
 	case ' ':
@@ -341,18 +393,19 @@ static int cmd_seek(void *data, const char *input) {
 		}
 	}
 	break;
-	case '.':
+	case '.': // "s."
 		for (input++; *input == '.'; input++) {
 			;
 		}
 		r_core_seek_base (core, input);
 		break;
-	case '*':
-	case '=':
-	case 'j':
-	case '!':
+	case 'j':  // "sj"
 		{
-			RList *list = r_io_sundo_list (core->io, input[0]);
+			RList /*<ut64 *>*/ *addrs = r_list_newf (free);
+			RList /*<char *>*/ *names = r_list_newf (free);
+			RList *list = r_io_sundo_list (core->io, '!');
+			ut64 lsz = 0;
+			ut64 i;
 			RListIter *iter;
 			RIOUndos *undo;
 			if (list) {
@@ -364,7 +417,7 @@ static int cmd_seek(void *data, const char *input) {
 					core->flags->space_strict = false;
 					if (f) {
 						if (f->offset != undo->off) {
-							name = r_str_newf ("%s + %d\n", f->name,
+							name = r_str_newf ("%s+%d", f->name,
 									(int)(undo->off- f->offset));
 						} else {
 							name = strdup (f->name);
@@ -373,16 +426,89 @@ static int cmd_seek(void *data, const char *input) {
 					if (!name) {
 						name = strdup ("");
 					}
-					r_cons_printf ("0x%"PFMT64x" %s\n", undo->off, name);
+					ut64 *val = malloc (sizeof (ut64));
+					if (!val) {
+						free (name);
+						break;
+					}
+					*val = undo->off;
+					r_list_append (addrs, val);
+					r_list_append (names, strdup (name));
+					lsz++;
 					free (name);
 				}
 				r_list_free (list);
+			}
+			r_cons_printf ("[");
+			for (i = 0; i < lsz; ++i) {
+				ut64 *addr = r_list_get_n (addrs, i);
+				const char *name = r_list_get_n (names, i);
+				// XXX(should the "name" field be optional? That might make
+				// a bit more sense.
+				r_cons_printf ("{\"offset\":%"PFMT64d",\"symbol\":\"%s\"}", *addr, name);
+				if (i != lsz - 1) {
+					r_cons_printf (",");
+				}
+			}
+			r_cons_printf ("]\n");
+			r_list_free (addrs);
+			r_list_free (names);
+		}
+		break;
+	case '*':
+	case '=':
+	case '!':
+		{
+			char mode = input[0];
+			if (input[1] == '=') {
+				mode = 0;
+			}
+			RList *list = r_io_sundo_list (core->io, mode);
+			if (list) {
+				RListIter *iter;
+				RIOUndos *undo;
+				r_list_foreach (list, iter, undo) {
+					char *name = NULL;
+
+					core->flags->space_strict = true;
+					RFlagItem *f = r_flag_get_at (core->flags, undo->off, true);
+					core->flags->space_strict = false;
+					if (f) {
+						if (f->offset != undo->off) {
+							name = r_str_newf ("%s + %d\n", f->name,
+									(int)(undo->off - f->offset));
+						} else {
+							name = strdup (f->name);
+						}
+					}
+					if (mode) {
+						r_cons_printf ("0x%"PFMT64x" %s\n", undo->off, name? name: "");
+					} else {
+						if (!name) {
+							name = r_str_newf ("0x%"PFMT64x, undo->off);
+						}
+						r_cons_printf ("%s%s", name, iter->n? " > ":"");
+					}
+					free (name);
+				}
+				r_list_free (list);
+				if (!mode) {
+					r_cons_newline ();
+				}
 			}
 		}
 		break;
 	case '+':
 		if (input[1] != '\0') {
-			int delta = (input[1] == '+')? core->blocksize: off;
+			int delta = off;
+			if (input[1] == '+') {
+				delta = core->blocksize;
+				int mult = r_num_math (core->num, input + 2);
+				if (mult > 0) {
+					delta /= mult;
+				}
+			}
+			// int delta = (input[1] == '+')? core->blocksize: off;
 			if (!silent) {
 				r_io_sundo_push (core->io, core->offset,
 					r_print_get_cursor (core->print));
@@ -398,20 +524,38 @@ static int cmd_seek(void *data, const char *input) {
 		}
 		break;
 	case '-': // "s-"
-		if (input[1] != '\0') {
-			int delta = (input[1] == '-')? -core->blocksize: -off;
-			if (!silent) {
-				r_io_sundo_push (core->io, core->offset,
-					r_print_get_cursor (core->print));
+		switch (input[1]) {
+		case '*':
+			r_io_sundo_reset (core->io);
+			break;
+		case 0:
+			{
+				RIOUndos *undo = r_io_sundo (core->io, core->offset);
+				if (undo) {
+					r_core_seek (core, undo->off, 0);
+					r_core_block_read (core);
+				}
 			}
-			r_core_seek_delta (core, delta);
-			r_core_block_read (core);
-		} else {
-			RIOUndos *undo = r_io_sundo (core->io, core->offset);
-			if (undo) {
-				r_core_seek (core, undo->off, 0);
+			break;
+		case '-':
+		default:
+			{
+				int delta = -off;
+				if (input[1] == '-') {
+					delta = -core->blocksize;
+					int mult = r_num_math (core->num, input + 2);
+					if (mult > 0) {
+						delta /= mult;
+					}
+				}
+				if (!silent) {
+					r_io_sundo_push (core->io, core->offset,
+							r_print_get_cursor (core->print));
+				}
+				r_core_seek_delta (core, delta);
 				r_core_block_read (core);
 			}
+		break;
 		}
 		break;
 	case 'n':
@@ -519,21 +663,13 @@ static int cmd_seek(void *data, const char *input) {
 		if (s) {
 			r_core_seek (core, s->vaddr + s->size + 2, 1);
 		} else {
-			r_core_seek (core, r_io_desc_size (core->io, core->file->desc), 1);
+			r_core_seek (core, r_io_fd_size (core->io, core->file->fd), 1);
 		}
 	}
 	break;
 	case 'l': // "sl"
 	{
 		int sl_arg = r_num_math (core->num, input + 1);
-		const char *help_msg[] = {
-			"Usage:", "sl+ or sl- or slc", "",
-			"sl", " [line]", "Seek to absolute line",
-			"sl", "[+-][line]", "Seek to relative line",
-			"slc", "", "Clear line cache",
-			"sll", "", "Show total number of lines",
-			NULL
-		};
 		switch (input[1]) {
 		case 0:
 			if (!core->print->lines_cache) {
@@ -564,7 +700,7 @@ static int cmd_seek(void *data, const char *input) {
 			eprintf ("%d lines\n", core->print->lines_cache_sz - 1);
 			break;
 		case '?':
-			r_core_cmd_help (core, help_msg);
+			r_core_cmd_help (core, help_msg_sl);
 			break;
 		}
 	}
@@ -572,38 +708,8 @@ static int cmd_seek(void *data, const char *input) {
 	case ':':
 		printPadded (core, atoi (input + 1));
 		break;
-	case '?': {
-		const char *help_message[] = {
-			"Usage: s", "", " # Seek commands",
-			"s", "", "Print current address",
-			"s:", "pad", "Print current address with N padded zeros (defaults to 8)",
-			"s", " addr", "Seek to address",
-			"s-", "", "Undo seek",
-			"s-", " n", "Seek n bytes backward",
-			"s--", "", "Seek blocksize bytes backward",
-			"s+", "", "Redo seek",
-			"s+", " n", "Seek n bytes forward",
-			"s++", "", "Seek blocksize bytes forward",
-			"s[j*=!]", "", "List undo seek history (JSON, =list, *r2, !=names)",
-			"s/", " DATA", "Search for next occurrence of 'DATA'",
-			"s/x", " 9091", "Search for next occurrence of \\x90\\x91",
-			"s.", "hexoff", "Seek honoring a base from core->offset",
-			"sa", " [[+-]a] [asz]", "Seek asz (or bsize) aligned to addr",
-			"sb", "", "Seek aligned to bb start",
-			"sC", "[?] string", "Seek to comment matching given string",
-			"sf", "", "Seek to next function (f->addr+f->size)",
-			"sf", " function", "Seek to address of specified function",
-			"sg/sG", "", "Seek begin (sg) or end (sG) of section or file",
-			"sl", "[?] [+-]line", "Seek to line",
-			"sn/sp", "", "Seek to next/prev location, as specified by scr.nkey",
-			"so", " [N]", "Seek to N next opcode(s)",
-			"sr", " pc", "Seek to register",
-			"ss", "", "Seek silently (without adding an entry to the seek history)",
-			// "sp [page]  seek page N (page = block)",
-			NULL
-		};
-		r_core_cmd_help (core, help_message);
-		}
+	case '?':
+		r_core_cmd_help (core, help_msg_s);
 		break;
 	}
 	return 0;

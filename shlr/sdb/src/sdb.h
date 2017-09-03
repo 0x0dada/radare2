@@ -39,6 +39,11 @@ extern "C" {
 #ifndef _MSC_VER
 extern __attribute__((dllimport)) void *__cdecl _aligned_malloc(size_t, size_t);
 extern char *strdup (const char *);
+#else
+#include <process.h>
+#include <windows.h>
+#include <malloc.h> // for _aligned_malloc
+#define ftruncate _chsize
 #endif
 #undef r_offsetof
 #define r_offsetof(type, member) ((unsigned long) (ut64)&((type*)0)->member)
@@ -94,6 +99,7 @@ typedef struct sdb_t {
 	SdbList *hooks;
 	SdbKv tmpkv;
 	ut32 depth;
+	bool timestamped;
 } Sdb;
 
 typedef struct sdb_ns_t {

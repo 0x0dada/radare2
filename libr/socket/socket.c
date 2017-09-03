@@ -1,4 +1,4 @@
-/* radare - LGPL - Copyright 2006-2015 - pancake */
+/* radare - LGPL - Copyright 2006-2017 - pancake */
 
 /* must be included first because of winsock2.h and windows.h */
 #include <r_socket.h>
@@ -275,8 +275,9 @@ R_API bool r_socket_connect (RSocket *s, const char *host, const char *port, int
 	}
 	return false;
 #elif __UNIX__ || defined(__CYGWIN__)
-	int gai, ret;
-	struct addrinfo hints, *res, *rp;
+	int ret;
+	struct addrinfo hints = {0};
+	struct addrinfo *res, *rp;
 	if (!proto) {
 		proto = R_SOCKET_PROTO_TCP;
 	}
@@ -286,10 +287,9 @@ R_API bool r_socket_connect (RSocket *s, const char *host, const char *port, int
 			return false;
 		}
 	} else {
-		memset (&hints, 0, sizeof (struct addrinfo));
 		hints.ai_family = AF_UNSPEC; /* Allow IPv4 or IPv6 */
 		hints.ai_protocol = proto;
-		gai = getaddrinfo (host, port, &hints, &res);
+		int gai = getaddrinfo (host, port, &hints, &res);
 		if (gai != 0) {
 			eprintf ("Error in getaddrinfo: %s\n", gai_strerror (gai));
 			return false;

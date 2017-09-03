@@ -31,7 +31,7 @@
 #define __MINGW__ 1
 #endif
 
-#if __WIN32__ || __MINGW__ || __WINDOWS__ || defined(_MSC_VER)
+#if __WIN32__ || __MINGW__ || __WINDOWS__ || _MSC_VER
 #define __SDB_WINDOWS__ 1
 #include <windows.h>
 #define DIRSEP '\\'
@@ -41,20 +41,20 @@
 #define DIRSEP '/'
 #endif
 
-#include <unistd.h>
 #include <inttypes.h>
-#define ULLFMT "ll"
-
 #if __SDB_WINDOWS__ && !__CYGWIN__
 #define HAVE_MMAN 0
+#define ULLFMT "I64"
 #else
 #define HAVE_MMAN 1
+#define ULLFMT "ll"
 #endif
 
 #ifndef USE_MMAN
 #define USE_MMAN HAVE_MMAN
 #endif
 
+#include <unistd.h>
 
 #ifndef UNUSED
 #  define UNUSED

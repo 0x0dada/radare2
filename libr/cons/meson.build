@@ -18,15 +18,11 @@ files=[
 'utf8.c'
 ]
 
-r_cons = shared_library('r_cons', files,
-  include_directories: include_directories([
-  '../include'],
-  platform_librinc
-  ),
+r_cons = library('r_cons', files,
+  include_directories: [platform_inc],
   link_with: [r_util],
   objects: [
-    r_sdb.extract_all_objects()
+	libr2sdb.extract_all_objects()
   ],
   install: true
 )
-

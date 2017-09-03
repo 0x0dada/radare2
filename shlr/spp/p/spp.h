@@ -12,7 +12,7 @@ static int spp_var_set(const char *var, const char *val) {
 
 /* Should be dynamic buffer */
 static char *cmd_to_str(const char *cmd) {
-	char *out = (char *)calloc (4096, 0);
+	char *out = (char *)calloc (4096, 1);
 	int ret = 0, len = 0, outlen = 4096;
 	FILE *fd = popen (cmd, "r");
 	while (fd) {
@@ -125,17 +125,17 @@ static TAG_CALLBACK(spp_sub) {
 
 // XXX This method needs some love
 static TAG_CALLBACK(spp_trace) {
-	char b[1024];
-	if (!echo[ifl]) return 0;
-	snprintf(b, 1023, "echo '%s' >&2 ", buf);
-	system(b);
+	if (echo[ifl]) {
+		fprintf (stderr, "%s\n", buf);
+	}
 	return 0;
 }
 
 /* TODO: deprecate */
 static TAG_CALLBACK(spp_echo) {
-	if (!echo[ifl]) return 0;
-	do_printf (out, "%s", buf);
+	if (echo[ifl]) {
+		do_printf (out, "%s", buf);
+	}
 	// TODO: add variable replacement here?? not necessary, done by {{get}}
 	return 0;
 }

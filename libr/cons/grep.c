@@ -1,4 +1,4 @@
-/* radare - LGPL - Copyright 2009-2016 - pancake, nibble */
+/* radare - LGPL - Copyright 2009-2017 - pancake, nibble */
 
 #include <r_cons.h>
 #include <r_util.h>
@@ -23,6 +23,7 @@ R_API void r_cons_grep_help() {
 		"| modifiers:\n"
 		"|   &        all words must match to grep the line\n"
 		"|   $[n]     sort numerically / alphabetically the Nth column\n"
+		"|   +        case insensitive grep (grep -i)\n"
 		"|   ^        words must be placed at the beginning of line\n"
 		"|   !        negate grep\n"
 		"|   ?        count number of matching lines\n"
@@ -50,7 +51,7 @@ R_API void r_cons_grep_help() {
 
 #define R_CONS_GREP_BUFSIZE 4096
 
-R_API void r_cons_grep(const char *str) {
+static void parse_grep_expression(const char *str) {
 	static char buf[R_CONS_GREP_BUFSIZE];
 	int wlen, len, is_range, num_is_parsed, fail = 0;
 	char *ptr, *optr, *ptr2, *ptr3;
@@ -65,6 +66,7 @@ R_API void r_cons_grep(const char *str) {
 	sorted_column = 0;
 	cons->grep.sort = -1;
 	cons->grep.line = -1;
+	bool first = true;
 	while (*str) {
 		switch (*str) {
 		case '.':
@@ -84,8 +86,6 @@ R_API void r_cons_grep(const char *str) {
 				if (!strncmp (str, "{}..", 4)) {
 					cons->grep.less = 1;
 				}
-				str++;
-				return;
 			} else {
 				char *jsonPath = strdup (str + 1);
 				char *jsonPathEnd = strchr (jsonPath, '}');
@@ -120,6 +120,12 @@ R_API void r_cons_grep(const char *str) {
 			str++;
 			cons->grep.amp = 1;
 			break;
+		case '+':
+			if (first) {
+				str++;
+				cons->grep.icase = 1;
+			}
+			break;
 		case '^':
 			str++;
 			cons->grep.begin = 1;
@@ -135,6 +141,7 @@ R_API void r_cons_grep(const char *str) {
 				cons->grep.charCounter = true;
 				str++;
 			} else if (*str == '?') {
+				cons->filter = true;
 				r_cons_grep_help ();
 				return;
 			}
@@ -142,6 +149,7 @@ R_API void r_cons_grep(const char *str) {
 		default:
 			goto while_end;
 		}
+		first = false;
 	}
 while_end:
 
@@ -177,7 +185,7 @@ while_end:
 		ptr2++;
 		for (; ptr2 <= ptr3; ++ptr2) {
 			if (fail) {
-				memset (cons->grep.tokens, 0, R_CONS_GREP_TOKENS);
+				ZERO_FILL (cons->grep.tokens);
 				cons->grep.tokens_used = 0;
 				fail = 0;
 				break;
@@ -269,6 +277,87 @@ while_end:
 	}
 }
 
+// Finds and returns next intgerp expression,
+// unescapes escaped twiddles
+static char *find_next_intgrep(char *cmd, const char *quotes) {
+	char *p;
+	do {
+		p = (char *)r_str_firstbut (cmd, '~', quotes);
+		if (!p) {
+			break;
+		}
+		if (p == cmd || *(p - 1) != '\\') {
+			return (char*)p;
+		}
+		//twiddle unescape
+		memmove (p - 1, p, strlen(p) + 1);
+		cmd = p + 1;
+	} while (*cmd);
+	return NULL;
+}
+
+/*
+ * Removes grep part from *cmd* and returns newly allocated string
+ * with reshaped grep expression.
+ *
+ * Function converts multiple twiddle expressions into internal representation.
+ * For example:
+ * converts "~str1~str2~str3~?" into "?&str1,str2,str3"
+ */
+static char *preprocess_filter_expr(char *cmd, const char *quotes) {
+	char *p1, *p2, *ns = NULL;
+	const char *strsep = "&";
+	int len;
+	int i;
+
+	p1 = find_next_intgrep (cmd, quotes);
+	if (!p1) {
+		return NULL;
+	}
+
+	len = strlen (p1);
+	if (len > 4 && r_str_endswith (p1, "~?") && p1[len - 3] != '\\') {
+		p1[len - 2] = '\0';
+		ns = r_str_append (ns, "?");
+	}
+
+	*p1 = '\0'; // remove grep part from cmd
+
+	i = 0;
+	// parse words between '~'
+	while ((p2 = find_next_intgrep (p1 + 1, quotes))) {
+		ns = r_str_append (ns, strsep);
+		ns = r_str_appendlen (ns, p1 + 1, (int)(p2 - p1 - 1));
+		p1 = p2;
+		strsep = ",";
+		i++;
+	}
+
+	if (i > 0) {
+		ns = r_str_append (ns, ",");
+	}
+
+	ns = r_str_append (ns, p1 + 1);
+
+	return ns;
+}
+
+R_API void r_cons_grep_parsecmd(char *cmd, const char *quotestr) {
+	char *ptr;
+
+	if (!cmd) {
+		return;
+	}
+
+	ptr = preprocess_filter_expr (cmd, quotestr);
+
+	if (ptr) {
+		r_str_chop (cmd);
+		parse_grep_expression (ptr);
+		free (ptr);
+	}
+}
+
 static int cmp(const void *a, const void *b) {
 	char *da = NULL;
 	char *db = NULL;
@@ -309,6 +398,11 @@ R_API int r_cons_grepbuf(char *buf, int len) {
 	char *tline, *tbuf, *p, *out, *in = buf;
 	int ret, total_lines = 0, buffer_len = 0, l = 0, tl = 0;
 	bool show = false;
+	if (cons->filter) {
+		cons->buffer_len = 0;
+		R_FREE (cons->buffer);
+		return 0;
+	}
 
 	if ((!len || !buf || buf[0] == '\0') &&
 	    (cons->grep.json || cons->grep.less)) {
@@ -329,7 +423,15 @@ R_API int r_cons_grepbuf(char *buf, int len) {
 			}
 			R_FREE (cons->grep.json_path);
 		} else {
-			char *out = r_print_json_indent (buf, I (use_color), "  ");
+			const char *palette[] = {
+				cons->pal.graph_false, // f
+				cons->pal.graph_true, // t
+				cons->pal.num, // k
+				cons->pal.comment, // v
+				Color_RESET,
+				NULL
+			};
+			char *out = r_print_json_indent (buf, I (use_color), "  ", palette);
 			if (!out) {
 				return 0;
 			}
@@ -369,7 +471,14 @@ R_API int r_cons_grepbuf(char *buf, int len) {
 		cons->buffer[0] = 0;
 	}
 	out = tbuf = calloc (1, len);
+	if (!out) {
+		return 0;
+	}
 	tline = malloc (len);
+	if (!tline) {
+		free (out);
+		return 0;
+	}
 	cons->lines = 0;
 	// used to count lines and change negative grep.line values
 	while ((int) (size_t) (in - buf) < len) {
@@ -516,7 +625,14 @@ R_API int r_cons_grep_line(char *buf, int len) {
 
 	if (cons->grep.nstrings > 0) {
 		int ampfail = cons->grep.amp;
+		if (cons->grep.icase) {
+			r_str_case (in, false);
+		}
 		for (i = 0; i < cons->grep.nstrings; i++) {
+			char *str = cons->grep.strings[i];
+			if (cons->grep.icase) {
+				r_str_case (str, false);
+			}
 			char *p = strstr (in, cons->grep.strings[i]);
 			if (!p) {
 				ampfail = 0;
@@ -645,69 +761,57 @@ static const char *gethtmlcolor(const char ptrch, const char *def) {
 	return def;
 }
 
-// XXX: rename char *r_cons_filter_html(const char *ptr)
-R_API int r_cons_html_print(const char *ptr) {
+// TODO: move into r_util/str
+R_API char *r_cons_html_filter(const char *ptr, int *newlen) {
 	const char *str = ptr;
 	int esc = 0;
 	int len = 0;
 	int inv = 0;
 	int tmp;
 	bool tag_font = false;
-
 	if (!ptr) {
-		return 0;
+		return NULL;
+	}
+	RStrBuf *res = r_strbuf_new ("");
+	if (!res) {
+		return NULL;
 	}
 	for (; ptr[0]; ptr = ptr + 1) {
 		if (ptr[0] == '\n') {
 			tmp = (int) (size_t) (ptr - str);
-			if (write (1, str, tmp) != tmp) {
-				eprintf ("r_cons_html_print: write: error\n");
-			}
-			printf ("<br />");
+			r_strbuf_append_n (res, str, tmp);
+			r_strbuf_append (res, "<br />");
 			if (!ptr[1]) {
 				// write new line if it's the end of the output
-				printf ("\n");
+				r_strbuf_append (res, "\n");
 			}
 			str = ptr + 1;
-			fflush (stdout);
 			continue;
 		} else if (ptr[0] == '<') {
 			tmp = (int) (size_t) (ptr - str);
-			if (write (1, str, tmp) != tmp) {
-				eprintf ("r_cons_html_print: write: error\n");
-			}
-			printf ("&lt;");
-			fflush (stdout);
+			r_strbuf_append_n (res, str, tmp);
+			r_strbuf_append (res, "&lt;");
 			str = ptr + 1;
 			continue;
 		} else if (ptr[0] == '>') {
 			tmp = (int) (size_t) (ptr - str);
-			if (write (1, str, tmp) != tmp) {
-				eprintf ("r_cons_html_print: write: error\n");
-			}
-			printf ("&gt;");
-			fflush (stdout);
+			r_strbuf_append_n (res, str, tmp);
+			r_strbuf_append (res, "&gt;");
 			str = ptr + 1;
 			continue;
 		} else if (ptr[0] == ' ') {
 			tmp = (int) (size_t) (ptr - str);
-			if (write (1, str, tmp) != tmp) {
-				eprintf ("r_cons_html_print: write: error\n");
-			}
-			printf ("&nbsp;");
-			fflush (stdout);
+			r_strbuf_append_n (res, str, tmp);
+			r_strbuf_append (res, "&nbsp;");
 			str = ptr + 1;
 			continue;
 		}
 		if (ptr[0] == 0x1b) {
 			esc = 1;
 			tmp = (int) (size_t) (ptr - str);
-			if (write (1, str, tmp) != tmp) {
-				eprintf ("r_cons_html_print: write: error\n");
-			}
+			r_strbuf_append_n (res, str, tmp);
 			if (tag_font) {
-				printf ("</font>");
-				fflush (stdout);
+				r_strbuf_append (res, "</font>");
 				tag_font = false;
 			}
 			str = ptr + 1;
@@ -726,29 +830,27 @@ R_API int r_cons_html_print(const char *ptr) {
 		} else if (esc == 2) {
 			// TODO: use dword comparison here
 			if (ptr[0] == '2' && ptr[1] == 'J') {
-				printf ("<hr />\n");
-				fflush (stdout);
+				r_strbuf_append (res, "<hr />");
 				ptr++;
 				esc = 0;
 				str = ptr;
 				continue;
 			} else if (!strncmp (ptr, "48;5;", 5)) {
 				char *end = strchr (ptr, 'm');
-				printf ("<font style='background-color:%s'>", gethtmlrgb (ptr));
-				fflush (stdout);
+				r_strbuf_appendf (res, "<font style='background-color:%s'>", gethtmlrgb (ptr));
 				tag_font = true;
 				ptr = end;
 				str = ptr + 1;
 				esc = 0;
 			} else if (!strncmp (ptr, "38;5;", 5)) {
 				char *end = strchr (ptr, 'm');
-				printf ("<font color='%s'>", gethtmlrgb (ptr));
-				fflush (stdout);
+				r_strbuf_appendf (res, "<font color='%s'>", gethtmlrgb (ptr));
 				tag_font = true;
 				ptr = end;
 				str = ptr + 1;
 				esc = 0;
 			} else if (ptr[0] == '0' && ptr[1] == ';' && ptr[2] == '0') {
+				// wtf ?
 				r_cons_gotoxy (0, 0);
 				ptr += 4;
 				esc = 0;
@@ -766,17 +868,15 @@ R_API int r_cons_html_print(const char *ptr) {
 				continue;
 				// reset color
 			} else if (ptr[0] == '3' && ptr[2] == 'm') {
-				printf ("<font color='%s'>", gethtmlcolor (ptr[1], inv? "#fff": "#000"));
-				fflush (stdout);
+				r_strbuf_appendf (res, "<font color='%s'>", gethtmlcolor (ptr[1], inv? "#fff": "#000"));
 				tag_font = true;
 				ptr = ptr + 1;
 				str = ptr + 2;
 				esc = 0;
 				continue;
 			} else if (ptr[0] == '4' && ptr[2] == 'm') {
-				printf ("<font style='background-color:%s'>",
+				r_strbuf_appendf (res, "<font style='background-color:%s'>",
 					gethtmlcolor (ptr[1], inv? "#000": "#fff"));
-				fflush (stdout);
 				tag_font = true;
 				ptr = ptr + 1;
 				str = ptr + 2;
@@ -787,10 +887,21 @@ R_API int r_cons_html_print(const char *ptr) {
 		len++;
 	}
 	if (tag_font) {
-		printf ("</font>");
-		fflush (stdout);
+		r_strbuf_append (res, "</font>");
 		tag_font = false;
 	}
-	write (1, str, ptr - str);
-	return len;
+	r_strbuf_append_n (res, str, ptr - str);
+	if (newlen) {
+		*newlen = res->len;
+	}
+	return r_strbuf_drain (res);
+}
+
+R_API int r_cons_html_print(const char *ptr) {
+	char *res = r_cons_html_filter (ptr, NULL);
+	int res_len = strlen (res);
+	printf ("%s", res);
+	fflush (stdout);
+	free (res);
+	return res_len;
 }

@@ -488,8 +488,14 @@ static int replace(int argc, const char *argv[], char *newstr) {
 		{ "bflrl", "if (!cond) call A", 1},
 		{ "bl", "call A", 1},
 		{ "bla", "call A", 1},
-		{ "blr", "ret", 0},
-		{ "blrl", "ret", 0},
+		{ "blr", "return", 0},
+		{ "blrl", "return", 0},
+		{ "bltlr", "if (A & FLG_LT) return", 1},
+		{ "blelr", "if (A & FLG_LE) return", 1},
+		{ "bgtlr", "if (A & FLG_GT) return", 1},
+		{ "bgelr", "if (A & FLG_GE) return", 1},
+		{ "bnelr", "if (A & FLG_NE) return", 1},
+		{ "beqlr", "if (A & FLG_EQ) return", 1},
 		{ "brinc", "A = bit_revese(B, C)", 3},
 		{ "bt", "if (cond) goto A", 1},
 		{ "bta", "if (cond) goto A", 1},
@@ -1559,31 +1565,41 @@ static int replace(int argc, const char *argv[], char *newstr) {
 							switch(to) {
 								case 4:
 									w = "==";
+									break;
 								case 1:
 								case 8:
 									w = ">";
+									break;
 								case 5:
 								case 12:
 									w = ">=";
+									break;
 								case 2:
 								case 16:
 									w = "<";
+									break;
 								case 6:
 								case 20:
 									w = "<=";
+									break;
 								case 24:
 									w = "!=";
+									break;
 								case 31:
 									// If no parameters t[dw][i] 32, 0, 0 just TRAP
 									w = "==";
+									break;
+								default:
+									w = "?";
+									break;
 							}
-							w = cmask64("0", w);
+							w = cmask64 ("0", w);
 						} else if ((i == 44 && letter == 2) || (i == 45 && letter == 1)) { //spr
-							w = getspr(w);
+							w = getspr (w);
 						}
 						if (w != NULL) {
 							strcpy (newstr + k, w);
-							k += strlen(w) - 1;
+							k += strlen (w) - 1;
 						}
 					} else {
 						newstr[k] = ops[i].str[j];
@@ -1618,13 +1634,14 @@ static int parse(RParse *p, const char *data, char *str) {
 	char *buf, *ptr, *optr;
 
 	if (!strcmp (data, "jr ra")) {
-		strcpy (str, "ret");
+		strcpy (str, "return");
 		return true;
 	}
 
 	// malloc can be slow here :?
-	if (!(buf = malloc (len + 1)))
+	if (!(buf = malloc (len + 1))) {
 		return false;
+	}
 	memcpy (buf, data, len + 1);
 
 	r_str_replace_char (buf, '(', ',');

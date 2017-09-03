@@ -1,7 +1,7 @@
-/* radare - LGPL - Copyright 2009-2016 pancake */
+/* radare - LGPL - Copyright 2009-2017 pancake */
 
 #include <r_debug.h>
-#include "../config.h"
+#include <config.h>
 
 static RDebugPlugin *debug_static_plugins[] = {
 	R_DEBUG_STATIC_PLUGINS
@@ -11,9 +11,7 @@ R_API void r_debug_plugin_init(RDebug *dbg) {
 	int i;
 	dbg->plugins = r_list_newf (free);
 	for (i = 0; debug_static_plugins[i]; i++) {
-		RDebugPlugin *p = R_NEW (RDebugPlugin);
-		memcpy (p, debug_static_plugins[i], sizeof (RDebugPlugin));
-		r_debug_plugin_add (dbg, p);
+		r_debug_plugin_add (dbg, debug_static_plugins[i]);
 	}
 }
 
@@ -40,8 +38,9 @@ R_API bool r_debug_use(RDebug *dbg, const char *str) {
 				r_reg_free (dbg->anal->reg);
 				dbg->anal->reg = dbg->reg;
 			}
-			if (dbg->h->init)
+			if (dbg->h->init) {
 				dbg->h->init (dbg);
+			}
 			r_reg_set_profile_string (dbg->reg, p);
 			free (p);
 		} else {

@@ -4,6 +4,7 @@
 #include <r_lib.h>
 #include <r_socket.h>
 #include <r_util.h>
+#include <ctype.h>
 #define IRAPI static inline
 #include <libgdbr.h>
 #include <gdbclient/commands.h>
@@ -19,54 +20,45 @@ static bool __plugin_open(RIO *io, const char *file, bool many) {
 	return (!strncmp (file, "gdb://", 6));
 }
 
-/* hacky cache to speedup gdb io a bit */
-/* reading in a different place clears the previous cache */
-static ut64 c_addr = UT64_MAX;
-static ut32 c_size = UT32_MAX;
-static ut8 *c_buff = NULL;
-#define SILLY_CACHE 0
-
 static int debug_gdb_read_at(ut8 *buf, int sz, ut64 addr) {
-	ut32 size_max = 500;
-	ut32 packets = sz / size_max;
-	ut32 last = sz % size_max;
+	ut32 size_max;
+	ut32 packets;
+	ut32 last;
 	ut32 x;
-	if (c_buff && addr != UT64_MAX && addr == c_addr) {
-		memcpy (buf, c_buff, sz);
-		return sz;
-	}
-	if (sz < 1 || addr >= UT64_MAX) {
+	int ret = 0;
+	if (sz < 1 || addr >= UT64_MAX || !desc) {
 		return -1;
 	}
+	size_max = desc->data_max / 2;
+	packets = sz / size_max;
+	last = sz % size_max;
 	for (x = 0; x < packets; x++) {
-		gdbr_read_memory (desc, addr + (x * size_max), size_max);
+		if (gdbr_read_memory (desc, addr + (x * size_max), size_max) < 0) {
+			return ret;
+		}
 		memcpy ((buf + (x * size_max)), desc->data + (x * size_max), R_MIN (sz, size_max));
+		ret += desc->data_len;
 	}
 	if (last) {
-		gdbr_read_memory (desc, addr + x * size_max, last);
+		if (gdbr_read_memory (desc, addr + x * size_max, last) < 0) {
+			return ret;
+		}
 		memcpy ((buf + x * size_max), desc->data + (x * size_max), last);
+		ret += desc->data_len;
 	}
-	c_addr = addr;
-	c_size = sz;
-#if SILLY_CACHE
-	free (c_buff);
-	c_buff = r_mem_dup (buf, sz);
-#endif
-	return sz;
+	return ret;
 }
 
 static int debug_gdb_write_at(const ut8 *buf, int sz, ut64 addr) {
-	ut32 x, size_max = 500;
-	ut32 packets = sz / size_max;
-	ut32 last = sz % size_max;
-
-	if (sz < 1 || addr >= UT64_MAX) {
+	ut32 x, size_max;
+	ut32 packets;
+	ut32 last;
+	if (sz < 1 || addr >= UT64_MAX || !desc) {
 		return -1;
 	}
-	if (c_addr != UT64_MAX && addr >= c_addr && c_addr + sz < (c_addr + c_size)) {
-		R_FREE (c_buff);
-		c_addr = UT64_MAX;
-	}
+	size_max = desc->read_max;
+	packets = sz / size_max;
+	last = sz % size_max;
 	for (x = 0; x < packets; x++) {
 		gdbr_write_memory (desc, addr + x * size_max,
 			(const uint8_t*)(buf + x * size_max), size_max);
@@ -75,47 +67,92 @@ static int debug_gdb_write_at(const ut8 *buf, int sz, ut64 addr) {
 		gdbr_write_memory (desc, addr + x * size_max,
 			(buf + x * size_max), last);
 	}
-
 	return sz;
 }
 
 static RIODesc *__open(RIO *io, const char *file, int rw, int mode) {
 	RIOGdb *riog;
-	char host[128], *port, *p;
+	char host[128], *port, *pid;
+	int i_port = -1;
+	bool isdev = false;
 
-	if (!__plugin_open (io, file, 0))
+	if (!__plugin_open (io, file, 0)) {
 		return NULL;
+	}
 	if (riogdb) {
 		// FIX: Don't allocate more than one gdb RIODesc
 		return riogdb;
 	}
-	strncpy (host, file+6, sizeof (host)-1);
-	host [sizeof (host)-1] = '\0';
-	port = strchr (host , ':');
-	if (!port) {
-		eprintf ("Port not specified. Please use gdb://[host]:[port]\n");
-		return NULL;
+	strncpy (host, file + 6, sizeof (host)-1);
+	host [sizeof (host) - 1] = '\0';
+	if (host[0] == '/') {
+		isdev = true;
 	}
-	*port = '\0';
-	port++;
-	p = strchr (port, '/');
-	if (p) *p = 0;
 
-	if (r_sandbox_enable (0)) {
-		eprintf ("sandbox: Cannot use network\n");
+	if (isdev) {
+		port = strchr (host, '@');
+		if (port) {
+			*port = '\0';
+			port++;
+			pid = strchr (port, ':');
+		} else {
+			pid = strchr (host, ':');
+		}
+	} else {
+		if (r_sandbox_enable (0)) {
+			eprintf ("sandbox: Cannot use network\n");
+			return NULL;
+		}
+
+		port = strchr (host , ':');
+		if (!port) {
+			eprintf ("Invalid debugger URI. Port missing?\nPlease use either\n"
+				" - gdb://host:port[/pid] for a network gdbserver.\n"
+				" - gdb:///dev/DEVICENAME[@speed][:pid] for a serial gdbserver.\n");
+			return NULL;
+		}
+		*port = '\0';
+		port++;
+		pid = strchr (port, '/');
+	}
+
+	int i_pid = -1;
+	if (pid) {
+		*pid = 0;
+		pid++;
+		i_pid = atoi (pid);
+	}
+
+	if (port) {
+		i_port = atoi (port);
+	}
+
+	if (!(riog = R_NEW0 (RIOGdb))) {
 		return NULL;
 	}
-	riog = R_NEW0 (RIOGdb);
-	gdbr_init (&riog->desc);
-	int i_port = atoi(port);
+	gdbr_init (&riog->desc, false);
+
 	if (gdbr_connect (&riog->desc, host, i_port) == 0) {
 		desc = &riog->desc;
-		riogdb = r_io_desc_new (&r_io_plugin_gdb, riog->desc.sock->fd, file, rw, mode, riog);
-		return riogdb;
+		if (pid) { // FIXME this is here for now because RDebug's pid and libgdbr's aren't properly synced.
+			desc->pid = i_pid;
+			if (gdbr_attach (desc, i_pid) < 0) {
+				eprintf ("gdbr: Failed to attach to PID %i\n", i_pid);
+				return NULL;
+			}
+		} else if ((i_pid = desc->pid) < 0) {
+			i_pid = -1;
+		}
+		riogdb = r_io_desc_new (io, &r_io_plugin_gdb, file, rw, mode, riog);
 	}
-	eprintf ("gdb.io.open: Cannot connect to host.\n");
-	free (riog);
-	return NULL;
+	// Get name
+	if (riogdb) {
+		riogdb->name = gdbr_exec_file_read (desc, i_pid);
+	} else {
+		eprintf ("gdb.io.open: Cannot connect to host.\n");
+		free (riog);
+	}
+	return riogdb;
 }
 
 static int __write(RIO *io, RIODesc *fd, const ut8 *buf, int count) {
@@ -127,14 +164,15 @@ static int __write(RIO *io, RIODesc *fd, const ut8 *buf, int count) {
 static ut64 __lseek(RIO *io, RIODesc *fd, ut64 offset, int whence) {
 	switch (whence) {
 	case R_IO_SEEK_SET:
-		return offset;
+		io->off = offset;
+		break;
 	case R_IO_SEEK_CUR:
-		return io->off + offset;
+		io->off += offset;
+		break;
 	case R_IO_SEEK_END:
-		return UT64_MAX;
-	default:
-		return offset;
+		io->off = UT64_MAX;
 	}
+	return io->off;
 }
 
 static int __read(RIO *io, RIODesc *fd, ut8 *buf, int count) {
@@ -143,15 +181,28 @@ static int __read(RIO *io, RIODesc *fd, ut8 *buf, int count) {
 	if (!desc || !desc->data) {
 		return -1;
 	}
-	return debug_gdb_read_at(buf, count, addr);
+	return debug_gdb_read_at (buf, count, addr);
 }
 
 static int __close(RIODesc *fd) {
-	// TODO
+	if (fd) {
+		R_FREE (fd->name);
+	}
+	gdbr_disconnect (desc);
+	gdbr_cleanup (desc);
+	free (desc);
 	return -1;
 }
 
-int send_command(libgdbr_t* g, const char* command);
+static int __getpid(RIODesc *fd) {
+	return desc ? desc->pid : -1;
+}
+
+static int __gettid(RIODesc *fd) {
+	return desc ? desc->tid : -1;
+}
+
+int send_msg(libgdbr_t* g, const char* command);
 int read_packet(libgdbr_t* instance);
 
 static int __system(RIO *io, RIODesc *fd, const char *cmd) {
@@ -159,22 +210,113 @@ static int __system(RIO *io, RIODesc *fd, const char *cmd) {
         /* XXX ugly hack for testing purposes */
         if (!cmd[0] || cmd[0] == '?' || !strcmp (cmd, "help")) {
                 eprintf ("Usage: =!cmd args\n"
-                        " =!pid      - show targeted pid\n"
-                        " =!pkt s    - send packet 's'\n");
-	} else if (!strncmp (cmd, "pkt ", 4)) {
-		send_command (desc, cmd + 4);
+                         " =!pid             - show targeted pid\n"
+                         " =!pkt s           - send packet 's'\n"
+                         " =!monitor cmd     - hex-encode monitor command and pass"
+                                             " to target interpreter\n"
+                         " =!detach [pid]    - detach from remote/detach specific pid\n"
+                         " =!inv.reg         - invalidate reg cache\n"
+                         " =!pktsz           - get max packet size used\n"
+                         " =!pktsz bytes     - set max. packet size as 'bytes' bytes\n"
+                         " =!exec_file [pid] - get file which was executed for"
+                                             " current/specified pid\n");
+		return true;
+	}
+	if (!strncmp (cmd, "pktsz", 5)) {
+		const char *ptr = r_str_chop_ro (cmd + 5);
+		if (!isdigit (*ptr)) {
+			io->cb_printf ("packet size: %u bytes\n",
+				       desc->stub_features.pkt_sz);
+			return true;
+		}
+		ut32 pktsz;
+		if (!(pktsz = (ut32) strtoul (ptr, NULL, 10))) {
+			// pktsz = 0 doesn't make sense
+			return false;
+		}
+		desc->stub_features.pkt_sz = R_MAX (pktsz, 64); // min = 64
+		return true;
+	}
+	if (!strncmp (cmd, "detach", 6)) {
+		int pid;
+		if (!isspace (cmd[6]) || !desc->stub_features.multiprocess) {
+			return gdbr_detach (desc) >= 0;
+		}
+		cmd = r_str_chop_ro (cmd + 6);
+		if (!*cmd || !(pid = strtoul (cmd, NULL, 10))) {
+			return gdbr_detach (desc) >= 0;
+		}
+		return gdbr_detach_pid (desc, pid) >= 0;
+	}
+	if (!strncmp (cmd, "pkt ", 4)) {
+		if (send_msg (desc, cmd + 4) == -1) {
+			return false;
+		}
 		int r = read_packet (desc);
-		eprintf ("r = %d\n", r);
-	} else if (!strncmp (cmd, "pid", 3)) {
-		int pid = 1234;
+		desc->data[desc->data_len] = '\0';
+		io->cb_printf ("reply:\n%s\n", desc->data);
+		if (!desc->no_ack) {
+			eprintf ("[waiting for ack]\n");
+		}
+		return r >= 0;
+	}
+	if (!strncmp (cmd, "pid", 3)) {
+		int pid = desc ? desc->pid : -1;
 		if (!cmd[3]) {
 			io->cb_printf ("%d\n", pid);
 		}
 		return pid;
-	} else {
-		eprintf ("Try: '=!?'\n");
 	}
-        return true;
+	if (!strncmp (cmd, "monitor", 7)) {
+		const char *qrcmd = cmd + 8;
+		if (!isspace (cmd[8])) {
+			qrcmd = "help";
+		}
+		if (gdbr_send_qRcmd (desc, qrcmd, io->cb_printf) < 0) {
+			eprintf ("remote error\n");
+			return false;
+		}
+		return true;
+	}
+	if (!strncmp (cmd, "inv.reg", 7)) {
+		gdbr_invalidate_reg_cache ();
+		return true;
+	}
+	if (r_str_startswith (cmd, "exec_file")) {
+		const char *ptr = cmd + strlen ("exec_file");
+		char *file;
+		int pid;
+		if (!isspace (*ptr)) {
+			if (!(file = gdbr_exec_file_read (desc, 0))) {
+				return false;
+			}
+		} else {
+			while (isspace (*ptr)) {
+				ptr++;
+			}
+			if (isdigit (*ptr)) {
+				pid = atoi (ptr);
+				if (!(file = gdbr_exec_file_read (desc, pid))) {
+					return false;
+				}
+			} else {
+				if (!(file = gdbr_exec_file_read (desc, 0))) {
+					return false;
+				}
+			}
+		}
+		io->cb_printf ("%s\n", file);
+		free (file);
+		return true;
+	}
+	// This is internal, not available to user. Sets a flag that next call to
+	// get memmap will be for getting baddr
+	if (!strcmp (cmd, "baddr")) {
+		desc->get_baddr = true;
+		return true;
+	}
+	eprintf ("Try: '=!?'\n");
+	return true;
 }
 
 RIOPlugin r_io_plugin_gdb = {
@@ -189,6 +331,8 @@ RIOPlugin r_io_plugin_gdb = {
 	.check = __plugin_open,
 	.lseek = __lseek,
 	.system = __system,
+	.getpid = __getpid,
+	.gettid = __gettid,
 	.isdbg = true
 };
 

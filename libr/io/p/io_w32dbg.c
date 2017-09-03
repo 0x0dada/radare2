@@ -15,6 +15,7 @@
 typedef struct {
 	int pid;
 	int tid;
+	ut64 winbase;
 	PROCESS_INFORMATION pi;
 } RIOW32Dbg;
 #define RIOW32DBG_PID(x) (((RIOW32Dbg*)x->data)->pid)
@@ -63,6 +64,7 @@ static int __attach (RIOW32Dbg *dbg) {
 static RIODesc *__open(RIO *io, const char *file, int rw, int mode) {
 	if (__plugin_open (io, file, 0)) {
 		char *pidpath;
+		RIODesc *ret;
 		RIOW32Dbg *dbg = R_NEW0 (RIOW32Dbg);
 		if (!dbg) {
 			return NULL;
@@ -73,18 +75,27 @@ static RIODesc *__open(RIO *io, const char *file, int rw, int mode) {
 			return NULL;
 		}
 		pidpath = r_sys_pid_to_path (dbg->pid);
-		RETURN_IO_DESC_NEW (&r_io_plugin_w32dbg, dbg->pid,
-			pidpath, rw | R_IO_EXEC, mode, dbg);
+		ret = r_io_desc_new (io, &r_io_plugin_w32dbg,
+				file, rw | R_IO_EXEC, mode, dbg);
+		ret->name = pidpath;
+		return ret;
 	}
 	return NULL;
 }
 
 static ut64 __lseek(RIO *io, RIODesc *fd, ut64 offset, int whence) {
-	return (!whence)
-		? offset
-		: (whence == 1)
-			? io->off + offset
-			: UT64_MAX;
+	switch (whence) {
+	case 0: // abs
+		io->off = offset;
+		break;
+	case 1: // cur
+		io->off += (int)offset;
+		break;
+	case 2: // end
+		io->off = UT64_MAX;
+		break;
+	}
+	return io->off;
 }
 
 static int __close(RIODesc *fd) {
@@ -119,6 +130,28 @@ static int __system(RIO *io, RIODesc *fd, const char *cmd) {
 	return -1;
 }
 
+static int __getpid (RIODesc *fd) {
+	RIOW32Dbg *iow = (RIOW32Dbg *)(fd ? fd->data : NULL);
+	if (!iow) {
+		return -1;
+	}
+	return iow->pid;
+}
+
+static int __gettid (RIODesc *fd) {
+	RIOW32Dbg *iow = (RIOW32Dbg *)(fd ? fd->data : NULL);
+	return iow? iow->tid: -1;
+}
+
+static bool __getbase (RIODesc *fd, ut64 *base) {
+	RIOW32Dbg *iow = (RIOW32Dbg *)(fd ? fd->data : NULL);
+	if (base && iow) {
+		*base = iow->winbase;
+		return true;
+	}
+	return false;
+}
+
 RIOPlugin r_io_plugin_w32dbg = {
 	.name = "w32dbg",
 	.desc = "w32dbg io",
@@ -130,16 +163,19 @@ RIOPlugin r_io_plugin_w32dbg = {
 	.lseek = __lseek,
 	.system = __system,
 	.write = __write,
+	.getpid = __getpid,
+	.gettid = __gettid,
+	.getbase = __getbase,
 	.isdbg = true
 };
 #else
-struct r_io_plugin_t r_io_plugin_w32dbg = {
+RIOPlugin r_io_plugin_w32dbg = {
 	.name = NULL
 };
 #endif
 
 #ifndef CORELIB
-struct r_lib_struct_t radare_plugin = {
+RLibStruct radare_plugin = {
 	.type = R_LIB_TYPE_IO,
 	.data = &r_io_plugin_w32dbg,
 	.version = R2_VERSION

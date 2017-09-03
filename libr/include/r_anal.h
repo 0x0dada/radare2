@@ -101,6 +101,7 @@ enum {
 #define R_ANAL_ARCHINFO_MIN_OP_SIZE 0
 #define R_ANAL_ARCHINFO_MAX_OP_SIZE 1
 #define R_ANAL_ARCHINFO_ALIGN 2
+#define R_ANAL_ARCHINFO_DATA_ALIGN 4
 
 /* copypaste from r_asm.h */
 
@@ -322,6 +323,7 @@ enum {
 	R_META_TYPE_HIDE = 'h',
 	R_META_TYPE_COMMENT = 'C',
 	R_META_TYPE_RUN = 'r',
+	R_META_TYPE_HIGHLIGHT = 'H',
 };
 
 // anal
@@ -330,6 +332,7 @@ enum {
 	R_ANAL_OP_FAMILY_CPU = 0,/* normal cpu instruction */
 	R_ANAL_OP_FAMILY_FPU,    /* fpu (floating point) */
 	R_ANAL_OP_FAMILY_MMX,    /* multimedia instruction (packed data) */
+	R_ANAL_OP_FAMILY_SSE,    /* extended multimedia instruction (packed data) */
 	R_ANAL_OP_FAMILY_PRIV,   /* priviledged instruction */
 	R_ANAL_OP_FAMILY_CRYPTO, /* cryptographic instructions */
 	R_ANAL_OP_FAMILY_VIRT,   /* virtualization instructions */
@@ -588,6 +591,7 @@ typedef struct r_anal_t {
 	char *cpu;
 	char *os;
 	int bits;
+	int addrbytes;
 	int lineswidth; // wtf
 	int big_endian;
 	int split; // used only from core
@@ -614,6 +618,7 @@ typedef struct r_anal_t {
 	int trace;
 	int esil_goto_limit;
 	int pcalign;
+	int bitshift;
 	RList *types;
 	//struct r_anal_ctx_t *ctx;
 	struct r_anal_esil_t *esil;
@@ -652,6 +657,7 @@ typedef struct r_anal_t {
 	RListComparator columnSort;
 	int stackptr;
 	bool (*log)(struct r_anal_t *anal, const char *msg);
+	char *cmdtail;
 } RAnal;
 
 typedef RAnalFunction *(* RAnalGetFcnIn)(RAnal *anal, ut64 addr, int type);
@@ -961,7 +967,16 @@ typedef struct r_anal_reil {
 
 // must be a char
 #define ESIL_INTERNAL_PREFIX '$'
+#define ESIL_STACK_NAME "esil.ram"
 #define ESIL struct r_anal_esil_t
+
+typedef struct r_anal_esil_session_t {
+	ut64 key;
+	ut64 addr;
+	ut64 size;
+	ut8 *data;
+	RListIter *reg[R_REG_TYPE_LAST];
+} RAnalEsilSession;
 
 typedef struct r_anal_esil_callbacks_t {
 	void *user;
@@ -994,6 +1009,8 @@ typedef struct r_anal_esil_t {
 	int verbose;
 	ut64 flags;
 	ut64 address;
+	ut64 stack_addr;
+	ut32 stack_size;
 	int delay; 		// mapped to $ds in ESIL
 	ut64 jump_target; 	// mapped to $jt in ESIL
 	int jump_target_set; 	// mapped to $js in ESIL
@@ -1013,11 +1030,15 @@ typedef struct r_anal_esil_t {
 	RAnalEsilCallbacks cb;
 	RAnalReil *Reil;
 	char *cmd_intr; // r2 (external) command to run when an interrupt occurs
-	char *cmd_trap; // r2 (external) command to run when an interrupt occurs
-	char *cmd_mdev; // r2 (external) command to run when an interrupt occurs
+	char *cmd_trap; // r2 (external) command to run when a trap occurs
+	char *cmd_mdev; // r2 (external) command to run when an memory mapped device address is used
+	char *cmd_todo; // r2 (external) command to run when esil expr contains TODO
+	char *cmd_ioer; // r2 (external) command to run when esil fails to IO
 	char *mdev_range; // string containing the r_str_range to match for read/write accesses
 	bool (*cmd)(ESIL *esil, const char *name, ut64 a0, ut64 a1);
 	void *user;
+	int stack_fd;
+	RList *sessions; // <RAnalEsilSession*>
 } RAnalEsil;
 
 #undef ESIL
@@ -1240,6 +1261,7 @@ R_API void r_anal_esil_trace_show (RAnalEsil *esil, int idx);
 R_API bool r_anal_esil_set_pc (RAnalEsil *esil, ut64 addr);
 R_API int r_anal_esil_setup (RAnalEsil *esil, RAnal *anal, int romem, int stats, int nonull);
 R_API void r_anal_esil_free (RAnalEsil *esil);
+R_API int r_anal_esil_runword (RAnalEsil *esil, const char *word);
 R_API int r_anal_esil_parse (RAnalEsil *esil, const char *str);
 R_API int r_anal_esil_dumpstack (RAnalEsil *esil);
 R_API int r_anal_esil_mem_read (RAnalEsil *esil, ut64 addr, ut8 *buf, int len);
@@ -1260,12 +1282,18 @@ R_API int r_anal_esil_fire_interrupt (RAnalEsil *esil, int interrupt);
 R_API void r_anal_esil_mem_ro(RAnalEsil *esil, int mem_readonly);
 R_API void r_anal_esil_stats(RAnalEsil *esil, int enable);
 
+/* session */
+R_API void r_anal_esil_session_list(RAnalEsil *esil);
+R_API RAnalEsilSession *r_anal_esil_session_add(RAnalEsil *esil);
+R_API void r_anal_esil_session_set(RAnalEsil *esil, RAnalEsilSession *session);
+R_API void r_anal_esil_session_free(void *p);
+
 /* pin */
 R_API void r_anal_pin_init(RAnal *a);
 R_API void r_anal_pin_fini(RAnal *a);
 R_API void r_anal_pin (RAnal *a, ut64 addr, const char *name);
 R_API void r_anal_pin_unset (RAnal *a, ut64 addr);
-R_API int r_anal_pin_call(RAnal *a, ut64 addr);
+R_API const char *r_anal_pin_call(RAnal *a, ut64 addr);
 R_API void r_anal_pin_list(RAnal *a);
 
 /* fcn.c */
@@ -1281,7 +1309,7 @@ R_API RAnalFunction *r_anal_fcn_find_name(RAnal *anal, const char *name);
 R_API RList *r_anal_fcn_list_new(void);
 R_API int r_anal_fcn_insert(RAnal *anal, RAnalFunction *fcn);
 R_API void r_anal_fcn_free(void *fcn);
-R_API void fill_args (RAnal *anal, RAnalFunction *fcn, RAnalOp *op);
+R_API void r_anal_fcn_fill_args (RAnal *anal, RAnalFunction *fcn, RAnalOp *op);
 R_API int r_anal_fcn(RAnal *anal, RAnalFunction *fcn, ut64 addr,
 		ut8 *buf, ut64 len, int reftype);
 R_API int r_anal_fcn_add(RAnal *anal, ut64 addr, ut64 size,
@@ -1385,7 +1413,7 @@ R_API void r_anal_var_access_free(void *access);
 R_API int r_anal_var_delete_all (RAnal *a, ut64 addr, const char kind);
 R_API int r_anal_var_delete (RAnal *a, ut64 var_addr, const char kind, int scope, int delta);
 R_API bool r_anal_var_delete_byname (RAnal *a, RAnalFunction *fcn, int type, const char *name);
-R_API int r_anal_var_add (RAnal *a, ut64 addr, int scope, int delta, char kind, const char *type, int size, const char *name);
+R_API bool r_anal_var_add (RAnal *a, ut64 addr, int scope, int delta, char kind, const char *type, int size, const char *name);
 R_API int r_anal_var_del(RAnal *anal, RAnalFunction *fcn, int delta, int scope);
 R_API RAnalVar *r_anal_var_get (RAnal *a, ut64 addr, char kind, int scope, int index);
 R_API const char *r_anal_var_scope_to_str(RAnal *anal, int scope);

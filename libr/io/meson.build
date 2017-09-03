@@ -1,17 +1,22 @@
 files=[
-'buffer.c',
+'iobuf.c',
 'cache.c',
 'desc.c',
+'fd.c',
 'io.c',
+'ioutils.c',
 'map.c',
 'plugin.c',
 'section.c',
 'undo.c',
+'p_cache.c',
+'p/io_rbuf.c',
+'p/io_ar.c',
 'p/io_bfdbg.c',
-#'p/io_bochs.c',
+'p/io_bochs.c',
 'p/io_debug.c',
 'p/io_default.c',
-#'p/io_gdb.c',
+'p/io_gdb.c',
 'p/io_gzip.c',
 'p/io_http.c',
 'p/io_ihex.c',
@@ -21,7 +26,7 @@ files=[
 'p/io_null.c',
 'p/io_procpid.c',
 'p/io_ptrace.c',
-#'p/io_qnx.c',
+'p/io_qnx.c',
 'p/io_r2k.c',
 'p/io_r2pipe.c',
 'p/io_r2web.c',
@@ -30,10 +35,8 @@ files=[
 'p/io_shm.c',
 'p/io_sparse.c',
 'p/io_tcp.c',
-#'p/io_w32.c',
-#'p/io_w32dbg.c',
-#'p/io_windbg.c',
-#'p/io_zip.c',
+'p/io_windbg.c',
+'p/io_zip.c',
 ]
 
 if host_os == 'linux'
@@ -45,15 +48,24 @@ endif
 if host_os == 'windows'
 files += [
   'p/io_r2k_windows.c',
+  'p/io_w32.c',
+  'p/io_w32dbg.c',
 ]
 endif
 
-r_io = shared_library('r_io', files,
-  include_directories: include_directories([
-  '../include'],
-  platform_librinc
-  ),
-  link_with: [r_util, r_socket],
-  c_args : '-DCORELIB=1',
+r_io = library('r_io', files,
+  include_directories: [platform_inc, include_directories([
+	'../../shlr/bochs/include',
+	'../../shlr/gdb/include',
+	'../../shlr/qnx/include',
+	'../../shlr/windbg',
+	'../../shlr/ar',
+	'../../shlr/zip/include']
+  )],
+  link_with: [r_util, r_socket, libr2qnx, libr2bochs, libr2windbg, libr2gdb, libr2zip, libr2ar],
+  objects: [
+	libr2sdb.extract_all_objects(),
+  ],
+  c_args : ['-DCORELIB=1', '-I' + meson.current_build_dir() + '/../..'],
   install: true
 )

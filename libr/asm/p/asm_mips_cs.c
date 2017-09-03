@@ -1,4 +1,4 @@
-/* radare2 - LGPL - Copyright 2013-2016 - pancake */
+/* radare2 - LGPL - Copyright 2013-2017 - pancake */
 
 #include <r_asm.h>
 #include <r_lib.h>
@@ -23,9 +23,13 @@ static int disassemble(RAsm *a, RAsmOp *op, const ut8 *buf, int len) {
 			mode |= CS_MODE_MIPS32R6;
 		} else if (!strcmp (a->cpu, "v3")) {
 			mode |= CS_MODE_MIPS3;
+		} else if (!strcmp (a->cpu, "v2")) {
+#if CS_API_MAJOR > 3
+			mode |= CS_MODE_MIPS2;
+#endif
 		}
 	}
-	mode |= (a->bits == 64)? CS_MODE_64: CS_MODE_32;
+	mode |= (a->bits == 64)? CS_MODE_MIPS64 : CS_MODE_MIPS32;
 	memset (op, 0, sizeof (RAsmOp));
 	op->size = 4;
 	if (cd != 0) {
@@ -83,7 +87,7 @@ RAsmPlugin r_asm_plugin_mips_cs = {
 	.desc = "Capstone MIPS disassembler",
 	.license = "BSD",
 	.arch = "mips",
-	.cpus = "gp64,micro,r6,v3",
+	.cpus = "mips32/64,micro,r6,v3,v2",
 	.bits = 16|32|64,
 	.endian = R_SYS_ENDIAN_LITTLE | R_SYS_ENDIAN_BIG,
 	.disassemble = &disassemble,

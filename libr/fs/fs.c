@@ -1,7 +1,7 @@
-/* radare2 - LGPL - Copyright 2011-2016 - pancake */
+/* radare2 - LGPL - Copyright 2011-2017 - pancake */
 
 #include <r_fs.h>
-#include "../config.h"
+#include "config.h"
 #include "types.h"
 #include <errno.h>
 #include "../../shlr/grub/include/grub/msdos_partition.h"
@@ -66,8 +66,9 @@ R_API void r_fs_free(RFS* fs) {
 		return;
 	}
 	//r_io_free (fs->iob.io);
-	r_list_free (fs->plugins);
+	//root makes use of plugin so revert to avoid UaF
 	r_list_free (fs->roots);
+	r_list_free (fs->plugins);
 	free (fs);
 }
 

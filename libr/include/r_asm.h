@@ -67,6 +67,7 @@ enum {
 
 typedef struct r_asm_op_t {
 	int size; // instruction size
+	int bitsize; // instruction size in bits (or 0 if fits in 8bit bytes)
 	int payload; // size of payload (opsize = (size-payload))
 	// But this is pretty slow..so maybe we should add some accessors
 	ut8  buf[R_ASM_BUFSIZE + 1];
@@ -95,6 +96,7 @@ typedef struct {
 typedef struct r_asm_t {
 	char *cpu;
 	int bits;
+	int addrbytes;
 	int big_endian;
 	int syntax;
 	ut64 pc;
@@ -111,6 +113,10 @@ typedef struct r_asm_t {
 	char *features;
 	int invhex; // invalid instructions displayed in hex
 	int pcalign;
+	int dataalign;
+	int bitshift;
+	bool immdisp; // Display immediates with # symbol (for arm stuff).
+	SdbHash *flags;
 } RAsm;
 
 typedef int (*RAsmModifyCallback)(RAsm *a, ut8 *buf, int field, ut64 val);
@@ -244,13 +250,19 @@ extern RAsmPlugin r_asm_plugin_xtensa;
 extern RAsmPlugin r_asm_plugin_tricore;
 extern RAsmPlugin r_asm_plugin_pic18c;
 extern RAsmPlugin r_asm_plugin_rsp;
+extern RAsmPlugin r_asm_plugin_hexagon_gnu;
 extern RAsmPlugin r_asm_plugin_wasm;
 extern RAsmPlugin r_asm_plugin_tms320c64x;
+extern RAsmPlugin r_asm_plugin_evm;
 
 #endif
 
 #ifdef __cplusplus
 }
+#ifdef __cplusplus
+}
+#endif
+
 #endif
 
 #endif

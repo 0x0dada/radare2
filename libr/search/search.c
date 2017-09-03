@@ -90,13 +90,6 @@ R_API int r_search_begin(RSearch *s) {
 		kw->distance = 0; //s->distance;
 		kw->last = 0;
 	}
-#if 0
-	/* TODO: compile regexpes */
-	switch(s->mode) {
-	case R_SEARCH_REGEXP:
-		break;
-	}
-#endif
 	return true;
 }
 
@@ -115,10 +108,12 @@ R_API int r_search_hit_new(RSearch *s, RSearchKeyword *kw, ut64 addr) {
 		}
 		kw->last = addr + kw->keyword_length;
 	}
-	if (s->callback)
+	if (s->callback) {
 		return s->callback (kw, s->user, addr);
-	if (!(hit = r_mem_pool_alloc (s->pool)))
+	}
+	if (!(hit = r_mem_pool_alloc (s->pool))) {
 		return false;
+	}
 	hit->kw = kw;
 	hit->addr = addr;
 	r_list_append (s->hits, hit);
@@ -376,7 +371,9 @@ R_API void r_search_set_distance(RSearch *s, int dist) {
 	if (dist>=R_SEARCH_DISTANCE_MAX) {
 		eprintf ("Invalid distance\n");
 		s->distance = 0;
-	} else s->distance = (dist>0)?dist:0;
+	} else {
+		s->distance = (dist>0)?dist:0;
+	}
 }
 
 // deprecate? or standarize with ->align ??
@@ -441,10 +438,12 @@ R_API void r_search_kw_reset(RSearch *s) {
 R_API void r_search_reset(RSearch *s, int mode) {
 	r_list_purge (s->hits);
 	s->nhits = 0;
-	s->hits = r_list_new ();
-	if (!s->hits) return;
-	s->hits->free = free;
+	s->hits = r_list_newf ((RListFree)free);
+	if (!s->hits) {
+		return;
+	}
 	r_search_kw_reset (s);
-	if (!r_search_set_mode (s, mode))
+	if (!r_search_set_mode (s, mode)) {
 		eprintf ("Cannot init search for mode %d\n", mode);
+	}
 }

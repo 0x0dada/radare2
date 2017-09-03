@@ -8,6 +8,108 @@
 #include "r_types_base.h"
 #include "cmd_search_rop.c"
 
+static const char *help_msg_slash[] = {
+	"Usage:", "/[amx/] [arg]", "Search stuff (see 'e??search' for options)\n"
+	"|Use io.va for searching in non virtual addressing spaces",
+	"/", " foo\\x00", "search for string 'foo\\0'",
+	"/j", " foo\\x00", "search for string 'foo\\0' (json output)",
+	"/!", " ff", "search for first occurrence not matching",
+	"/+", " /bin/sh", "construct the string with chunks",
+	"/!x", " 00", "inverse hexa search (find first byte != 0x00)",
+	"//", "", "repeat last search",
+	"/h", "[t] [hash] [len]", "find block matching this hash. See /#?",
+	"/a", " jmp eax", "assemble opcode and search its bytes",
+	"/A", " jmp", "find analyzed instructions of this type (/A? for help)",
+	"/b", "", "search backwards",
+	"/B", "", "search recognized RBin headers",
+	"/c", " jmp [esp]", "search for asm code",
+	"/C", "[ar]", "search for crypto materials",
+	"/d", " 101112", "search for a deltified sequence of bytes",
+	"/e", " /E.F/i", "match regular expression",
+	"/E", " esil-expr", "offset matching given esil expressions %%= here",
+	"/f", " file [off] [sz]", "search contents of file with offset and size",
+	"/i", " foo", "search for string 'foo' ignoring case",
+	"/m", " magicfile", "search for matching magic file (use blocksize)",
+	"/o", " [n]", "show offset of n instructions backward",
+	"/p", " patternsize", "search for pattern of given size",
+	"/P", " patternsize", "search similar blocks",
+	"/r[e]", "[?] sym.printf", "analyze opcode reference an offset (/re for esil)",
+	"/R", " [grepopcode]", "search for matching ROP gadgets, semicolon-separated",
+	"/v", "[1248] value", "look for an `cfg.bigendian` 32bit value",
+	"/V", "[1248] min max", "look for an `cfg.bigendian` 32bit value in range",
+	"/w", " foo", "search for wide string 'f\\0o\\0o\\0'",
+	"/wi", " foo", "search for wide string ignoring case 'f\\0o\\0o\\0'",
+	"/x", " ff..33", "search for hex string ignoring some nibbles",
+	"/x", " ff0033", "search for hex string",
+	"/x", " ff43 ffd0", "search for hexpair with mask",
+	"/z", " min max", "search for strings of given size",
+#if 0
+	"\nConfiguration:", "", " (type `e??search.` for a complete list)",
+	"e", " cmd.hit = x", "command to execute on every search hit",
+	"e", " search.in = ?", "specify where to search stuff (depends on .from/.to)",
+	"e", " search.align = 4", "only catch aligned search hits",
+	"e", " search.from = 0", "start address",
+	"e", " search.to = 0", "end address",
+	"e", " search.flags = true", "if enabled store flags on keyword hits",
+#endif
+	NULL
+};
+
+static const char *help_msg_slash_c[] = {
+	"Usage:", "/c [inst]", " Search for asm",
+	"/c ", "instr", "search for instruction 'instr'",
+	"/c/ ", "instr", "search for instruction that matches regexp 'instr'",
+	"/c ", "instr1;instr2", "search for instruction 'instr1' followed by 'instr2'",
+	"/c/ ", "instr1;instr2", "search for regex instruction 'instr1' followed by regex 'instr2'",
+	"/cj ", "instr", "json output",
+	"/c/j ", "instr", "regex search with json output",
+	"/c* ", "instr", "r2 command output",
+	NULL
+};
+
+static const char *help_msg_slash_C[] = {
+	"Usage: /C", "", "Search for crypto materials",
+	"/Ca", "", "Search for AES keys",
+	"/Cr", "", "Search for private RSA keys",
+	NULL
+};
+
+static const char *help_msg_slash_r[] = {
+	"Usage:", "/r[e] [address]", " search references to this specific address",
+	"/r", " [addr]", "search references to this specific address",
+	"/re", " [addr]", "search references using esil",
+	"/rc", "", "search for call references",
+	"/ra", "", "search all references",
+NULL
+};
+
+static const char *help_msg_slash_R[] = {
+	"Usage: /R", "", "Search for ROP gadgets",
+	"/R", " [filter-by-string]", "Show gadgets",
+	"/R/", " [filter-by-regexp]", "Show gadgets [regular expression]",
+	"/Rl", " [filter-by-string]", "Show gadgets in a linear manner",
+	"/R/l", " [filter-by-regexp]", "Show gadgets in a linear manner [regular expression]",
+	"/Rj", " [filter-by-string]", "JSON output",
+	"/R/j", " [filter-by-regexp]", "JSON output [regular expression]",
+	"/Rk", " [select-by-class]", "Query stored ROP gadgets",
+	NULL
+};
+
+static const char *help_msg_slash_Rk[] = {
+	"Usage: /Rk", "", "Query stored ROP gadgets",
+	"/Rk", " [nop|mov|const|arithm|arithm_ct]", "Show gadgets",
+	"/Rkj", "", "JSON output",
+	"/Rkq", "", "List Gadgets offsets",
+	NULL
+};
+
+static const char *help_msg_slash_x[] = {
+	"Usage:", "/x [hexpairs]:[binmask]", "Search in memory",
+	"/x ", "9090cd80", "search for those bytes",
+	"/x ", "9090cd80:ffff7ff0", "search with binary mask",
+	NULL
+};
+
 static int preludecnt = 0;
 static int searchflags = 0;
 static int searchshow = 0;
@@ -37,6 +139,16 @@ struct endlist_pair {
 	int instr_offset;
 	int delay_size;
 };
+
+static void cmd_search_init(RCore *core) {
+	DEFINE_CMD_DESCRIPTOR_SPECIAL (core, /, slash);
+	DEFINE_CMD_DESCRIPTOR_SPECIAL (core, /c, slash_c);
+	DEFINE_CMD_DESCRIPTOR_SPECIAL (core, /C, slash_C);
+	DEFINE_CMD_DESCRIPTOR_SPECIAL (core, /r, slash_r);
+	DEFINE_CMD_DESCRIPTOR_SPECIAL (core, /R, slash_R);
+	DEFINE_CMD_DESCRIPTOR_SPECIAL (core, /Rk, slash_Rk);
+	DEFINE_CMD_DESCRIPTOR_SPECIAL (core, /x, slash_x);
+}
 
 static int search_hash(RCore *core, const char *hashname, const char *hashstr, ut32 minlen, ut32 maxlen) {
 	RIOMap *map;
@@ -130,9 +242,8 @@ static void cmd_search_bin(RCore *core, ut64 from, ut64 to) {
 			r_cons_printf ("0x%08"PFMT64x "  %s\n", from, plug->name);
 			// TODO: load the bin and calculate its size
 			if (plug->size) {
-				r_bin_load_io_at_offset_as_sz (core->bin,
-					core->file->desc, 0, 0, 0, core->offset,
-					plug->name, 4096);
+				r_bin_load_io_at_offset_as_sz (core->bin, core->file->fd,
+					0, 0, 0, core->offset, plug->name, 4096);
 				size = plug->size (core->bin->cur);
 				if (size > 0) {
 					r_cons_printf ("size %d\n", size);
@@ -154,35 +265,32 @@ static int __prelude_cb_hit(RSearchKeyword *kw, void *user, ut64 addr) {
 	return true;
 }
 
-R_API int r_core_search_prelude(RCore *core, ut64 from, ut64 to, const ut8 *buf,
-                                int blen, const ut8 *mask, int mlen) {
-	int ret;
+R_API int r_core_search_prelude(RCore *core, ut64 from, ut64 to, const ut8 *buf, int blen, const ut8 *mask, int mlen) {
 	ut64 at;
 	ut8 *b = (ut8 *) malloc (core->blocksize);
 	if (!b) {
 		return 0;
 	}
-// TODO: handle sections ?
+	// TODO: handle sections ?
 	if (from >= to) {
 		eprintf ("aap: Invalid search range 0x%08"PFMT64x " - 0x%08"PFMT64x "\n", from, to);
 		free (b);
 		return 0;
 	}
 	r_search_reset (core->search, R_SEARCH_KEYWORD);
-	r_search_kw_add (core->search,
-		r_search_keyword_new (buf, blen, mask, mlen, NULL));
+	r_search_kw_add (core->search, r_search_keyword_new (buf, blen, mask, mlen, NULL));
 	r_search_begin (core->search);
 	r_search_set_callback (core->search, &__prelude_cb_hit, core);
 	preludecnt = 0;
 	for (at = from; at < to; at += core->blocksize) {
-		if (r_cons_singleton ()->breaked) {
+		if (r_cons_is_breaked ()) {
 			break;
 		}
-		ret = r_io_read_at (core->io, at, b, core->blocksize);
-		if (ret != core->blocksize) {
+		if (!r_io_is_valid_offset (core->io, at, 0)) {
 			break;
 		}
-		if (r_search_update (core->search, &at, b, ret) == -1) {
+		(void)r_io_read_at (core->io, at, b, core->blocksize);
+		if (r_search_update (core->search, &at, b, core->blocksize) == -1) {
 			eprintf ("search: update read error at 0x%08"PFMT64x "\n", at);
 			break;
 		}
@@ -213,7 +321,7 @@ R_API int r_core_search_preludes(RCore *core) {
 	fc0 = count_functions (core);
 	r_list_foreach (list, iter, p) {
 		eprintf ("\r[>] Scanning %s 0x%"PFMT64x " - 0x%"PFMT64x " ", r_str_rwx_i (p->flags), p->from, p->to);
-		if (!cfg_debug && !(p->flags & R_IO_MAP)) {
+		if (!(p->flags & R_IO_EXEC)) {
 			eprintf ("skip\n");
 			continue;
 		}
@@ -326,29 +434,31 @@ static int __cb_hit(RSearchKeyword *kw, void *user, ut64 addr) {
 		char *s = NULL, *str = NULL, *p = NULL;
 		extra = (json)? 3: 1;
 		const char *type = "hexpair";
+		bool escaped = false;
 		switch (kw->type) {
 		case R_SEARCH_KEYWORD_TYPE_STRING:
 		{
 			const int ctx = 16;
+			const int prectx = addr > 16 ? ctx : addr;
 			char *pre, *pos, *wrd;
 			const int len = kw->keyword_length;
 			char *buf = calloc (1, len + 32 + ctx * 2);
 			type = "string";
-			r_core_read_at (core, addr - ctx, (ut8 *) buf, len + (ctx * 2));
-			pre = getstring (buf, ctx);
-			wrd = r_str_utf16_encode (buf + ctx, len);
-			pos = getstring (buf + ctx + len, ctx);
+			r_core_read_at (core, addr - prectx, (ut8 *) buf, len + (ctx * 2));
+			pre = getstring (buf, prectx);
+			wrd = r_str_utf16_encode (buf + prectx, len);
+			pos = getstring (buf + prectx + len, ctx);
 			if (!pos) {
 				pos = strdup ("");
 			}
 			free (buf);
 			if (json) {
-				s = r_str_newf ("%s%s%s", pre, wrd, pos);
-#if 0
-				char *msg = r_str_newf ("%s%s%s", pre, wrd, pos);
-				s = r_base64_encode_dyn (msg, -1);
-				free (msg);
-#endif
+				char *pre_esc = r_str_escape (pre);
+				char *pos_esc = r_str_escape (pos);
+				s = r_str_newf ("%s%s%s", pre_esc, wrd, pos_esc);
+				escaped = true;
+				free (pre_esc);
+				free (pos_esc);
 			} else if (use_color) {
 				s = r_str_newf (".%s"Color_YELLOW "%s"Color_RESET "%s.", pre, wrd, pos);
 			} else {
@@ -394,8 +504,12 @@ static int __cb_hit(RSearchKeyword *kw, void *user, ut64 addr) {
 			if (!first_hit) {
 				r_cons_printf (",");
 			}
+			char *es = escaped ? s : r_str_escape (s);
 			r_cons_printf ("{\"offset\": %"PFMT64d ",\"id:\":%d,\"type\":\"%s\",\"data\":\"%s\"}",
-				base_addr + addr, kw->kwidx, type, s);
+				base_addr + addr, kw->kwidx, type, es);
+			if (!escaped) {
+				free (es);
+			}
 		} else {
 			r_cons_printf ("0x%08"PFMT64x " %s%d_%d %s\n",
 				base_addr + addr, searchprefix, kw->kwidx, kw->count, s);
@@ -464,16 +578,14 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, int protection, const char 
 		*from = core->offset;
 		*to = core->offset + core->blocksize;
 	} else if (!strcmp (mode, "io.maps")) {
-		RListIter *iter;
+		SdbListIter *iter;
 		RIOMap *m;
-
 		*from = *to = 0;
-
 		list = r_list_newf (free);
 		if (!list) {
 			return NULL;
 		}
-		r_list_foreach (core->io->maps, iter, m) {
+		ls_foreach (core->io->maps, iter, m) {
 			RIOMap *map = R_NEW0 (RIOMap);
 			if (map) {
 				map->fd = m->fd;
@@ -486,11 +598,11 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, int protection, const char 
 		}
 		return list;
 	} else if (!strcmp (mode, "io.maps.range")) {
-		RListIter *iter;
+		SdbListIter *iter;
 		RIOMap *m;
 		*from = *to = 0;
 		list = r_list_newf (free);
-		r_list_foreach (core->io->maps, iter, m) {
+		ls_foreach (core->io->maps, iter, m) {
 			if (!*from) {
 				*from = m->from;
 				*to = m->to;
@@ -507,27 +619,24 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, int protection, const char 
 			*to = r_io_size (core->io);
 		}
 	} else if (!strcmp (mode, "file")) {
-		if (core->io->va) {
-			RListIter *iter;
+		//if (core->io->va) {
+			SdbListIter *iter;
 			RIOSection *s;
 			*from = *to = 0;
-			r_list_foreach (core->io->sections, iter, s) {
-				if (!(s->flags & R_IO_MAP)) {
-					continue;
-				}
+			ls_foreach (core->io->sections, iter, s) {
 				if (!*from) {
 					*from = s->vaddr;
-					*to = s->vaddr + s->vsize;
+					*to = s->vaddr + s->vsize -1 ;
 					continue;
 				}
 				if (((s->vaddr) < *from) && s->vaddr) {
 					*from = s->vaddr;
 				}
 				if ((s->vaddr + s->vsize) > *to) {
-					*to = s->vaddr + s->vsize;
+					*to = s->vaddr + s->vsize - 1;
 				}
 			}
-		}
+		//}
 		if (!*to || *to == UT64_MAX || *to == UT32_MAX) {
 			RIOMap *map = r_io_map_get (core->io, core->offset);
 			*from = core->offset;
@@ -536,31 +645,19 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, int protection, const char 
 				*from = 0;
 			}
 		}
-#if 0
-		RIOMap *map = R_NEW0 (RIOMap);
-		if (map) {
-			map->fd = core->io->raised;
-			map->from = *from;
-			map->to = *to;
-			map->flags = 6;
-			map->delta = 0;
-			list = r_list_newf (free);
-			r_list_append (list, map);
-		}
-#endif
 	} else if (!strcmp (mode, "io.section")) {
 		if (core->io->va) {
-			RListIter *iter;
+			SdbListIter *iter;
 			RIOSection *s;
 			*from = *to = core->offset;
-			r_list_foreach (core->io->sections, iter, s) {
+			ls_foreach (core->io->sections, iter, s) {
 				if (*from >= s->paddr && *from < (s->paddr + s->size)) {
 					*from = s->vaddr;
-					*to = s->vaddr + s->vsize;
+					*to = s->vaddr + s->vsize - 1;
 					break;
 				}
 				if (*from >= s->vaddr && *from < (s->vaddr + s->vsize)) {
-					*to = s->vaddr + s->size;
+					*to = s->vaddr + s->vsize - 1;
 					break;
 				}
 			}
@@ -600,11 +697,11 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, int protection, const char 
 			*from = core->offset;
 			*to = r_io_size (core->io);
 		}
-	} else if (!strncmp (mode, "io.sections", sizeof("io.sections") - 1)) {
+	} else if (!strncmp (mode, "io.sections", sizeof ("io.sections") - 1)) {
 		if (core->io->va) {
 			int mask = 0;
 			RIOMap *map;
-			RListIter *iter;
+			SdbListIter *iter;
 			RIOSection *s;
 
 			if (!strcmp (mode, "io.sections.exec")) {
@@ -616,7 +713,7 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, int protection, const char 
 
 			*from = UT64_MAX;
 			*to = 0;
-			r_list_foreach (core->io->sections, iter, s) {
+			ls_foreach (core->io->sections, iter, s) {
 				if (!mask || (s->flags & mask)) {
 					if (!list) {
 						list = r_list_newf (free);
@@ -629,7 +726,7 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, int protection, const char 
 					}
 					map->fd = s->fd;
 					map->from = s->vaddr;
-					map->to = s->vaddr + s->size;
+					map->to = s->vaddr + s->vsize - 1;
 					if (map->from && map->to) {
 						if (map->from < *from) {
 							*from = map->from;
@@ -761,9 +858,7 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, int protection, const char 
 					/* TODO: section size? */
 				} else {
 					if (core->file) {
-						*to = r_io_desc_size (core->io, core->file->desc);
-					} else {
-						*to = r_io_desc_size (core->io, NULL);
+						*to = r_io_fd_size (core->io, core->file->fd);
 					}
 				}
 			}
@@ -775,40 +870,6 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, int protection, const char 
 // XXX: deprecate and use _ok function only
 R_API RList *r_core_get_boundaries(RCore *core, const char *mode, ut64 *from, ut64 *to) {
 	return r_core_get_boundaries_prot (core, R_IO_EXEC | R_IO_WRITE | R_IO_READ, mode, from, to);
-}
-
-static ut64 findprevopsz(RCore *core, ut64 addr, ut8 *buf) {
-	ut8 i;
-	RAnalOp aop;
-
-	for (i = 0; i < 16; i++) {
-		if (r_anal_op (core->anal, &aop, addr - i, buf - i, 32 - i)) {
-			if (aop.size < 1) {
-				return UT64_MAX;
-			}
-			if (i == aop.size) {
-				switch (aop.type) {
-				case R_ANAL_OP_TYPE_ILL:
-				case R_ANAL_OP_TYPE_TRAP:
-				case R_ANAL_OP_TYPE_RET:
-				case R_ANAL_OP_TYPE_UCALL:
-				case R_ANAL_OP_TYPE_RCALL:
-				case R_ANAL_OP_TYPE_ICALL:
-				case R_ANAL_OP_TYPE_IRCALL:
-				case R_ANAL_OP_TYPE_CJMP:
-				case R_ANAL_OP_TYPE_UJMP:
-				case R_ANAL_OP_TYPE_RJMP:
-				case R_ANAL_OP_TYPE_IJMP:
-				case R_ANAL_OP_TYPE_IRJMP:
-				case R_ANAL_OP_TYPE_JMP:
-				case R_ANAL_OP_TYPE_CALL:
-					return UT64_MAX;
-				}
-				return addr - i;
-			}
-		}
-	}
-	return UT64_MAX;
 }
 
 static bool is_end_gadget(const RAnalOp *aop, const ut8 crop) {
@@ -1046,7 +1107,7 @@ static void print_rop(RCore *core, RList *hitlist, char mode, bool *json_first) 
 				r_cons_printf ("%s\n", opstr);
 			} else if (colorize) {
 				buf_asm = r_print_colorize_opcode (core->print, asmop.buf_asm,
-					core->cons->pal.reg, core->cons->pal.num);
+					core->cons->pal.reg, core->cons->pal.num, false);
 				r_cons_printf (" %s%s;", buf_asm, Color_RESET);
 				free (buf_asm);
 			} else {
@@ -1083,7 +1144,7 @@ static void print_rop(RCore *core, RList *hitlist, char mode, bool *json_first) 
 			}
 			if (colorize) {
 				buf_asm = r_print_colorize_opcode (core->print, asmop.buf_asm,
-					core->cons->pal.reg, core->cons->pal.num);
+					core->cons->pal.reg, core->cons->pal.num, false);
 				otype = r_print_color_op_type (core->print, analop.type);
 				if (comment) {
 					r_cons_printf ("  0x%08"PFMT64x " %18s%s  %s%s ; %s\n",
@@ -1335,12 +1396,14 @@ static int r_core_search_rop(RCore *core, ut64 from, ut64 to, int opt, const cha
 			// Disassemble one.
 			if (r_anal_op (core->anal, &end_gadget, from + i, buf + i,
 				    delta - i) <= 0) {
+				r_anal_op_fini (&end_gadget);
 				continue;
 			}
 			if (is_end_gadget (&end_gadget, crop)) {
 				struct endlist_pair *epair;
 				if (maxhits && r_list_length (end_list) >= maxhits) {
 					// limit number of high level rop gadget results
+					r_anal_op_fini (&end_gadget);
 					break;
 				}
 				epair = R_NEW0 (struct endlist_pair);
@@ -1355,6 +1418,7 @@ static int r_core_search_rop(RCore *core, ut64 from, ut64 to, int opt, const cha
 					r_list_append (end_list, (void *) epair);
 				}
 			}
+			r_anal_op_fini (&end_gadget);
 			if (r_cons_is_breaked ()) {
 				break;
 			}
@@ -1611,15 +1675,19 @@ static void do_anal_search(RCore *core, struct search_parameters *param, const c
 		mode = *input;
 		input++;
 		break;
+	case 0:
+		r_cons_printf (
+			"Usage: /A[f][?jq] [op.type | op.family]\n"
+			" /A?      - list all opcode types\n"
+			" /Af?     - list all opcode families\n"
+			" /A ucall - find calls with unknown destination\n"
+			" /Af sse  - find SSE instructions\n");
+		return;
 	case '?':
-		r_cons_printf ("Usage: /A[jq]%s [type]\n", chk_family? "f": "");
 		for (i = 0; i < 64; i++) {
-			const char *str;
-			if (chk_family) {
-				str = r_anal_op_family_to_string (i);
-			} else {
-				str = r_anal_optype_to_string (i);
-			}
+			const char *str = chk_family
+				? r_anal_op_family_to_string (i)
+				: r_anal_optype_to_string (i);
 			if (chk_family && atoi (str)) {
 				break;
 			}
@@ -1830,8 +1898,7 @@ static void do_asm_search(RCore *core, struct search_parameters *param, const ch
 static void do_string_search(RCore *core, struct search_parameters *param) {
 	ut64 at;
 	ut8 *buf;
-	int ret;
-	int oraise = core->io->raised;
+	int oldfd = (core && core->io) ? r_io_fd_get_current (core->io) : -1;
 	int bufsz;
 
 	if (json) {
@@ -1863,7 +1930,7 @@ static void do_string_search(RCore *core, struct search_parameters *param) {
 		// XXX required? imho nor_io_set_fd (core->io, core->file->fd);
 		if (!param->boundaries) {
 			RIOMap *map = R_NEW0 (RIOMap);
-			map->fd = core->io->desc->fd;
+			map->fd = r_io_fd_get_current (core->io);
 			map->from = param->from;
 			map->to = param->to;
 			param->boundaries = r_list_newf (free);
@@ -1875,7 +1942,6 @@ static void do_string_search(RCore *core, struct search_parameters *param) {
 		bufsz = core->blocksize;
 		r_cons_break_push (NULL, NULL);
 		r_list_foreach (param->boundaries, iter, map) {
-			int fd;
 			param->from = map->from;
 			param->to = map->to;
 			searchhits = 0;
@@ -1887,11 +1953,7 @@ static void do_string_search(RCore *core, struct search_parameters *param) {
 				break;
 			}
 
-			r_io_raise (core->io, map->fd);
-			fd = core->io->raised;
-			if (fd == -1 && core->io->desc) {
-				fd = core->io->desc->fd;
-			}
+			r_io_use_fd (core->io, map->fd);
 			if (!json) {
 				RSearchKeyword *kw = r_list_first (core->search->kws);
 				eprintf ("Searching %d bytes in [0x%"PFMT64x "-0x%"PFMT64x "]\n",
@@ -1926,26 +1988,25 @@ static void do_string_search(RCore *core, struct search_parameters *param) {
 				if ((at + bufsz) > param->to) {
 					bufsz = param->to - at;
 				}
-				// if seek fails we shouldnt read at all
-				(void) r_io_seek (core->io, at, R_IO_SEEK_SET);
-				ret = r_io_read (core->io, buf, bufsz);
-				if (ret < 1) {
+				if (!r_io_is_valid_offset (core->io, at, 0)) {
 					break;
 				}
+				(void)r_io_read_at (core->io, at, buf, bufsz);
 				if (param->crypto_search) {
 					int delta = 0;
 					if (param->aes_search) {
-						delta = r_search_aes_update (core->search, at, buf, ret);
+						delta = r_search_aes_update (core->search, at, buf, bufsz);
 					} else if (param->rsa_search) {
-						delta = r_search_rsa_update (core->search, at, buf, ret);
+						delta = r_search_rsa_update (core->search, at, buf, bufsz);
 					}
 					if (delta != -1) {
 						if (!r_search_hit_new (core->search, &aeskw, at + delta)) {
+							eprintf ("ERROR 2\n");
 							break;
 						}
 						aeskw.count++;
 					}
-				} else if (r_search_update (core->search, &at, buf, ret) == -1) {
+				} else if (r_search_update (core->search, &at, buf, bufsz) == -1) {
 					// eprintf ("search: update read error at 0x%08"PFMT64x"\n", at);
 					break;
 				}
@@ -1991,7 +2052,7 @@ static void do_string_search(RCore *core, struct search_parameters *param) {
 			r_list_free (param->boundaries);
 			param->boundaries = NULL;
 		}
-		r_io_raise (core->io, oraise);
+		r_io_use_fd (core->io, oldfd);
 	} else {
 		eprintf ("No keywords defined\n");
 	}
@@ -2328,46 +2389,30 @@ reread:
 			param.from = 0;
 		}
 		goto reread;
-	case 'o': // "/P"
-	{
-		// print the offset of the Previous opcode
-		ut8 buf[64];
-		ut64 off = core->offset;
-		r_core_read_at (core, off - 16, buf, 32);
-		off = findprevopsz (core, off, buf + 16);
+	case 'o': { // "/o" print the offset of the Previous opcode
+		ut64 addr, n = input[param_offset] ? r_num_math (core->num, input + param_offset) : 0;
+		if (!n) {
+			n = 1;
+		}
+		if (!r_core_prevop_addr (core, core->offset, n, &addr)) {
+			addr = UT64_MAX;
+			(void)r_core_asm_bwdis_len (core, NULL, &addr, n);
+		}
 		if (json) {
-			r_cons_printf ("[%"PFMT64u "]", off);
+			r_cons_printf ("[%"PFMT64u "]", addr);
 		} else {
-			r_cons_printf ("0x%08"PFMT64x "\n", off);
+			r_cons_printf ("0x%08"PFMT64x "\n", addr);
 		}
 	}
 	break;
 	case 'R':
 		if (input[1] == '?') {
-			const char *help_msg[] = {
-				"Usage: /R", "", "Search for ROP gadgets",
-				"/R", " [filter-by-string]", "Show gadgets",
-				"/R/", " [filter-by-regexp]", "Show gadgets [regular expression]",
-				"/Rl", " [filter-by-string]", "Show gadgets in a linear manner",
-				"/R/l", " [filter-by-regexp]", "Show gadgets in a linear manner [regular expression]",
-				"/Rj", " [filter-by-string]", "JSON output",
-				"/R/j", " [filter-by-regexp]", "JSON output [regular expression]",
-				"/Rk", " [select-by-class]", "Query stored ROP gadgets",
-				NULL
-			};
-			r_core_cmd_help (core, help_msg);
+			r_core_cmd_help (core, help_msg_slash_R);
 		} else if (input[1] == '/') {
 			r_core_search_rop (core, param.from, param.to, 0, input + 1, 1);
 		} else if (input[1] == 'k') {
 			if (input[2] == '?') {
-				const char *help_msg[] = {
-					"Usage: /Rk", "", "Query stored ROP gadgets",
-					"/Rk", " [nop|mov|const|arithm|arithm_ct]", "Show gadgets",
-					"/Rkj", "", "JSON output",
-					"/Rkq", "", "List Gadgets offsets",
-					NULL
-				};
-				r_core_cmd_help (core, help_msg);
+				r_core_cmd_help (core, help_msg_slash_Rk);
 			} else {
 				rop_kuery (core, input + 2);
 			}
@@ -2377,6 +2422,12 @@ reread:
 		goto beach;
 	case 'r': // "/r" and "/re"
 		switch (input[1]) {
+		case 'c': // "/rc"
+			r_core_anal_search (core, param.from, param.to, UT64_MAX, 'c');
+			break;
+		case 'a': // "/ra"
+			r_core_anal_search (core, param.from, param.to, UT64_MAX, 0);
+			break;
 		case 'e': // "/re"
 			if (input[2] == '?') {
 				eprintf ("Usage: /re $$ - to find references to current address\n");
@@ -2399,24 +2450,24 @@ reread:
 		case 0: // "/r"
 			if (input[param_offset - 1] == ' ') {
 				r_core_anal_search (core, param.from, param.to,
-					r_num_math (core->num, input + 2));
+					r_num_math (core->num, input + 2), 0);
 				r_core_cmdf (core, "axt @ 0x%"PFMT64x "\n", r_num_math (core->num, input + 2));
 			} else {
 				r_core_anal_search (core, param.from, param.to,
-					core->offset);
+					core->offset, 0);
 				r_core_cmdf (core, "axt @ 0x%"PFMT64x "\n", core->offset);
 			}
 			break;
 		case '?':
-			eprintf ("Usage /r[e] [address] - search references to this specific address\n");
 			break;
 		}
 		break;
-	case 'A':
+	case 'A': // "/A"
 		do_anal_search (core, &param, input + 1);
 		dosearch = false;
 		break;
-	case 'a': if (input[1]) {
+	case 'a': // "/a"
+		if (input[1]) {
 			char *kwd = r_core_asm_search (core, input + param_offset,
 				param.from, param.to);
 			if (kwd) {
@@ -2434,7 +2485,7 @@ reread:
 			}
 	}
 		break;
-	case 'C': {
+	case 'C': { // "/C"
 		dosearch = true;
 		param.crypto_search = true;
 		switch (input[1]) {
@@ -2447,13 +2498,7 @@ reread:
 		default: {
 			dosearch = false;
 			param.crypto_search = false;
-			const char *help_msg[] = {
-				"Usage: /C", "", "Search for crypto materials",
-				"/Ca", "", "Search for AES keys",
-				"/Cr", "", "Search for private RSA keys",
-				NULL
-			};
-			r_core_cmd_help (core, help_msg);
+			r_core_cmd_help (core, help_msg_slash_C);
 		}
 		}
 	} break;
@@ -2500,7 +2545,7 @@ reread:
 	case 'P': // "/P"
 		search_similar_pattern (core, atoi (input + 1));
 		break;
-	case 'V':
+	case 'V': // "/V"
 		// TODO: add support for json
 	{
 		int err = 1, vsize = atoi (input + 1);
@@ -2527,6 +2572,10 @@ reread:
 	break;
 	case 'v': // "/v"
 		if (input[1]) {
+			if (input[1] == '?') {
+				r_cons_print ("Usage: /v[1|2|4|8] [value]\n");
+				break;
+			}
 			if (input[2] == 'j') {
 				json = true;
 				param_offset++;
@@ -2585,7 +2634,7 @@ reread:
 		r_search_begin (core->search);
 		dosearch = true;
 		break;
-	case 'w': /* search wide string, includes ignorecase search functionality (/wi cmd)! */
+	case 'w': // "/w" search wide string, includes ignorecase search functionality (/wi cmd)!
 		if (input[1]) {
 			if (input[2]) {
 				if (input[1] == 'j' || input[2] == 'j') {
@@ -2629,19 +2678,19 @@ reread:
 			}
 		}
 		break;
-	case 'i':
+	case 'i': // "/i"
 		if (input[param_offset - 1] != ' ') {
 			eprintf ("Missing ' ' after /i\n");
 			ret = false;
 			goto beach;
 		}
 		ignorecase = true;
-	case 'j':
+	case 'j': // "/j"
 		if (input[0] == 'j') {
 			json = true;
 		}
 	/* pass-thru */
-	case ' ': /* search string */
+	case ' ': // "/ " search string
 		inp = strdup (input + 1 + ignorecase + json);
 		len = r_str_unescape (inp);
 		if (!json) {
@@ -2671,7 +2720,7 @@ reread:
 		r_search_begin (core->search);
 		dosearch = true;
 		break;
-	case 'e': /* match regexp */
+	case 'e': // "/e" match regexp
 		if (input[1]) {
 			RSearchKeyword *kw;
 			kw = r_search_keyword_new_regexp (input + param_offset, NULL);
@@ -2689,13 +2738,13 @@ reread:
 			eprintf ("Missing regex\n");
 		}
 		break;
-	case 'E':
+	case 'E': // "/E"
 		if (core->io && core->io->debug) {
 			r_debug_map_sync (core->dbg);
 		}
 		do_esil_search (core, &param, input);
 		goto beach;
-	case 'd': /* search delta key */
+	case 'd': // "/d" search delta key
 		if (input[1]) {
 			r_search_reset (core->search, R_SEARCH_DELTAKEY);
 			r_search_kw_add (core->search,
@@ -2706,7 +2755,7 @@ reread:
 			eprintf ("Missing delta\n");
 		}
 		break;
-	case 'h':
+	case 'h': // "/h"
 	{
 		char *p, *arg = r_str_chop (strdup (input + 1));
 		p = strchr (arg, ' ');
@@ -2778,21 +2827,14 @@ reread:
 			eprintf ("Usage: /f [file] ([offset] ([size]))\n");
 		}
 		break;
-	case 'x': /* search hex */
+	case 'x': // "/x" search hex
 		if (input[1] == '?') {
-			const char *help_msg[] = {
-				"Usage:", "/x [hexpairs]:[binmask]", "Search in memory",
-				"/x ", "9090cd80", "search for those bytes",
-				"/x ", "9090cd80:ffff7ff0", "search with binary mask",
-				NULL
-			};
-			r_core_cmd_help (core, help_msg);
+			r_core_cmd_help (core, help_msg_slash_x);
 		} else {
 			RSearchKeyword *kw;
 			char *s, *p = strdup (input + json + 2);
 			r_search_reset (core->search, R_SEARCH_KEYWORD);
-			r_search_set_distance (core->search, (int)
-				r_config_get_i (core->config, "search.distance"));
+			r_search_set_distance (core->search, (int)r_config_get_i (core->config, "search.distance"));
 			s = strchr (p, ':');
 			if (s) {
 				*s++ = 0;
@@ -2811,25 +2853,14 @@ reread:
 			free (p);
 		}
 		break;
-	case 'c': /* search asm */
+	case 'c': // "/c" search asm
 		if (input[1] == '?') {
-			const char *help_msg[] = {
-				"Usage:", "/c [inst]", " Search for asm",
-				"/c ", "instr", "search for instruction 'instr'",
-				"/c/ ", "instr", "search for instruction that matches regexp 'instr'",
-				"/c ", "instr1;instr2", "search for instruction 'instr1' followed by 'instr2'",
-				"/c/ ", "instr1;instr2", "search for regex instruction 'instr1' followed by regex 'instr2'",
-				"/cj ", "instr", "json output",
-				"/c/j ", "instr", "regex search with json output",
-				"/c* ", "instr", "r2 command output",
-				NULL
-			};
-			r_core_cmd_help (core, help_msg);
+			r_core_cmd_help (core, help_msg_slash_c);
 		}
 		do_asm_search (core, &param, input);
 		dosearch = 0;
 		break;
-	case '+':
+	case '+': // "/+"
 		if (input[1] == ' ') {
 			// TODO: support /+j
 			char *buf = malloc (strlen (input) * 2);
@@ -2867,7 +2898,7 @@ again:
 			eprintf ("Usage: /+ [string]\n");
 		}
 		break;
-	case 'z': /* search strings of min-max range*/
+	case 'z': // "/z" search strings of min-max range
 	{
 		char *p;
 		ut32 min, max;
@@ -2899,55 +2930,9 @@ again:
 		dosearch = true;
 	}
 	break;
-	case '?': {
-		const char *help_msg[] = {
-			"Usage:", "/[amx/] [arg]", "Search stuff (see 'e??search' for options)",
-			"/", " foo\\x00", "search for string 'foo\\0'",
-			"/j", " foo\\x00", "search for string 'foo\\0' (json output)",
-			"/!", " ff", "search for first occurrence not matching",
-			"/+", " /bin/sh", "construct the string with chunks",
-			"/!x", " 00", "inverse hexa search (find first byte != 0x00)",
-			"//", "", "repeat last search",
-			"/h", "[t] [hash] [len]", "find block matching this hash. See /#?",
-			"/a", " jmp eax", "assemble opcode and search its bytes",
-			"/A", " jmp", "find analyzed instructions of this type (/A? for help)",
-			"/b", "", "search backwards",
-			"/B", "", "search recognized RBin headers",
-			"/c", " jmp [esp]", "search for asm code",
-			"/C", "[ar]", "search for crypto materials",
-			"/d", " 101112", "search for a deltified sequence of bytes",
-			"/e", " /E.F/i", "match regular expression",
-			"/E", " esil-expr", "offset matching given esil expressions %%= here",
-			"/f", " file [off] [sz]", "search contents of file with offset and size",
-			"/i", " foo", "search for string 'foo' ignoring case",
-			"/m", " magicfile", "search for matching magic file (use blocksize)",
-			"/o", "", "show offset of previous instruction",
-			"/p", " patternsize", "search for pattern of given size",
-			"/P", " patternsize", "search similar blocks",
-			"/r[e]", " sym.printf", "analyze opcode reference an offset (/re for esil)",
-			"/R", " [grepopcode]", "search for matching ROP gadgets, semicolon-separated",
-			"/v", "[1248] value", "look for an `cfg.bigendian` 32bit value",
-			"/V", "[1248] min max", "look for an `cfg.bigendian` 32bit value in range",
-			"/w", " foo", "search for wide string 'f\\0o\\0o\\0'",
-			"/wi", " foo", "search for wide string ignoring case 'f\\0o\\0o\\0'",
-			"/x", " ff..33", "search for hex string ignoring some nibbles",
-			"/x", " ff0033", "search for hex string",
-			"/x", " ff43 ffd0", "search for hexpair with mask",
-			"/z", " min max", "search for strings of given size",
-#if 0
-			"\nConfiguration:", "", " (type `e??search.` for a complete list)",
-			"e", " cmd.hit = x", "command to execute on every search hit",
-			"e", " search.in = ?", "specify where to search stuff (depends on .from/.to)",
-			"e", " search.align = 4", "only catch aligned search hits",
-			"e", " search.from = 0", "start address",
-			"e", " search.to = 0", "end address",
-			"e", " search.flags = true", "if enabled store flags on keyword hits",
-#endif
-			NULL
-		};
-		r_core_cmd_help (core, help_msg);
-	}
-		  break;
+	case '?': // "/?"
+		r_core_cmd_help (core, help_msg_slash);
+		break;
 	default:
 		eprintf ("See /? for help.\n");
 		break;

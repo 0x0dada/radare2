@@ -5,6 +5,63 @@
 #include "r_config.h"
 #include "r_cons.h"
 #include "r_core.h"
+#include "../bin/pdb/pdb_downloader.h"
+
+static const char *help_msg_i[] = {
+	"Usage: i", "", "Get info from opened file (see rabin2's manpage)",
+	"Output mode:", "", "",
+	"'*'", "", "Output in radare commands",
+	"'j'", "", "Output in json",
+	"'q'", "", "Simple quiet output",
+	"Actions:", "", "",
+	"i|ij", "", "Show info of current file (in JSON)",
+	"iA", "", "List archs",
+	"ia", "", "Show all info (imports, exports, sections..)",
+	"ib", "", "Reload the current buffer for setting of the bin (use once only)",
+	"ic", "", "List classes, methods and fields",
+	"icc", "", "List classes, methods and fields in Header Format",
+	"iC", "", "Show signature info (entitlements, ...)",
+	"id", "[?]", "Debug information (source lines)",
+	"idp", "", "Show pdb file information",
+	"iD", " lang sym", "demangle symbolname for given language",
+	"ie", "", "Entrypoint",
+	"iE", "", "Exports (global symbols)",
+	"ih", "", "Headers (alias for iH)",
+	"iHH", "", "Verbose Headers in raw text",
+	"ii", "", "Imports",
+	"iI", "", "Binary info",
+	"ik", " [query]", "Key-value database from RBinObject",
+	"il", "", "Libraries",
+	"iL ", "[plugin]", "List all RBin plugins loaded or plugin details",
+	"im", "", "Show info about predefined memory allocation",
+	"iM", "", "Show main address",
+	"io", " [file]", "Load info from file (or last opened) use bin.baddr",
+	"ir", "", "Relocs",
+	"iR", "", "Resources",
+	"is", "", "Symbols",
+	"iS ", "[entropy,sha1]", "Sections (choose which hash algorithm to use)",
+	"iV", "", "Display file version info",
+	"iz|izj", "", "Strings in data sections (in JSON/Base64)",
+	"izz", "", "Search for Strings in the whole binary",
+	"iZ", "", "Guess size of binary program",
+	NULL
+};
+
+static const char *help_msg_id[] = {
+	"Usage: id", "", "Debug information",
+	"Output mode:", "", "",
+	"'*'", "", "Output in radare commands",
+	"id", "", "Source lines",
+	"idp", " [file.pdb]", "Show pdb file information",
+	".idp*", " [file.pdb]", "Load pdb file information",
+	"idpd", "", "Download pdb file on remote server",
+	NULL
+};
+
+static void cmd_info_init(RCore *core) {
+	DEFINE_CMD_DESCRIPTOR (core, i);
+	DEFINE_CMD_DESCRIPTOR (core, id);
+}
 
 #define PAIR_WIDTH 9
 // TODO: reuse implementation in core/bin.c
@@ -38,7 +95,7 @@ static bool demangle_internal(RCore *core, const char *lang, const char *s) {
 	}
 	if (res) {
 		if (*res) {
-			printf ("%s\n", res);
+			r_cons_printf ("%s\n", res);
 		}
 		free (res);
 		return false;
@@ -73,6 +130,7 @@ static void r_core_file_info(RCore *core, int mode) {
 	RBinInfo *info = r_bin_get_info (core->bin);
 	RBinFile *binfile = r_core_bin_cur (core);
 	RCoreFile *cf = core->file;
+	RIODesc *desc = cf ? r_io_desc_get (core->io, cf->fd) : NULL;
 	RBinPlugin *plugin = r_bin_file_cur_plugin (binfile);
 	if (mode == R_CORE_BIN_JSON) {
 		r_cons_printf ("{");
@@ -89,13 +147,13 @@ static void r_core_file_info(RCore *core, int mode) {
 			r_cons_printf ("\"type\":\"%s\"", STR (info->type));
 		}
 	} else {
-		fn = (cf && cf->desc)? cf->desc->name: NULL;
+		fn = desc ? desc->name: NULL;
 	}
 	if (cf && mode == R_CORE_BIN_JSON) {
 		const char *uri = fn;
 		if (!uri) {
-			if (cf->desc && cf->desc->uri && *cf->desc->uri) {
-				uri = cf->desc->uri;
+			if (desc && desc->uri && *desc->uri) {
+				uri = desc->uri;
 			} else {
 				uri = "";
 			}
@@ -108,9 +166,9 @@ static void r_core_file_info(RCore *core, int mode) {
 		if (dbg) {
 			dbg = R_IO_WRITE | R_IO_EXEC;
 		}
-		if (cf->desc) {
-			ut64 fsz = r_io_desc_size (core->io, cf->desc);
-			r_cons_printf (",\"fd\":%d", cf->desc->fd);
+		if (desc) {
+			ut64 fsz = r_io_desc_size (desc);
+			r_cons_printf (",\"fd\":%d", desc->fd);
 			if (fsz != UT64_MAX) {
 				r_cons_printf (",\"size\":%"PFMT64d, fsz);
 				char *humansz = r_num_units (NULL, fsz);
@@ -120,12 +178,12 @@ static void r_core_file_info(RCore *core, int mode) {
 				}
 			}
 			r_cons_printf (",\"iorw\":%s", r_str_bool ( io_cache ||\
-					cf->desc->flags & R_IO_WRITE ));
+					desc->flags & R_IO_WRITE ));
 			r_cons_printf (",\"mode\":\"%s\"", r_str_rwx_i (
-					cf->desc->flags & 7 ));
+					desc->flags & 7 ));
 			r_cons_printf (",\"obsz\":%"PFMT64d, (ut64) core->io->desc->obsz);
-			if (cf->desc->referer && *cf->desc->referer) {
-				r_cons_printf (",\"referer\":\"%s\"", cf->desc->referer);
+			if (desc->referer && *desc->referer) {
+				r_cons_printf (",\"referer\":\"%s\"", desc->referer);
 			}
 		}
 		r_cons_printf (",\"block\":%d", core->blocksize);
@@ -145,31 +203,31 @@ static void r_core_file_info(RCore *core, int mode) {
 		if (dbg) {
 			dbg = R_IO_WRITE | R_IO_EXEC;
 		}
-		if (cf->desc) {
+		if (desc) {
 			pair ("blksz", sdb_fmt (0, "0x%"PFMT64x, (ut64) core->io->desc->obsz));
 		}
 		pair ("block", sdb_fmt (0, "0x%x", core->blocksize));
-		if (cf->desc) {
-			pair ("fd", sdb_fmt (0, "%d", cf->desc->fd));
+		if (desc) {
+			pair ("fd", sdb_fmt (0, "%d", desc->fd));
 		}
-		if (fn || (cf->desc && cf->desc->uri)) {
-			pair ("file", fn? fn: cf->desc->uri);
+		if (fn || (desc && desc->uri)) {
+			pair ("file", fn? fn: desc->uri);
 		}
 		if (plugin) {
 			pair ("format", plugin->name);
 		}
-		if (cf->desc) {
-			pair ("iorw", r_str_bool (io_cache || cf->desc->flags & R_IO_WRITE ));
-			pair ("mode", r_str_rwx_i (cf->desc->flags & 7));
+		if (desc) {
+			pair ("iorw", r_str_bool (io_cache || desc->flags & R_IO_WRITE ));
+			pair ("mode", r_str_rwx_i (desc->flags & 7));
 		}
 		if (binfile && binfile->curxtr) {
 			pair ("packet", binfile->curxtr->name);
 		}
-		if (cf->desc && cf->desc->referer && *cf->desc->referer) {
-			pair ("referer", cf->desc->referer);
+		if (desc && desc->referer && *desc->referer) {
+			pair ("referer", desc->referer);
 		}
-		if (cf->desc) {
-			ut64 fsz = r_io_desc_size (core->io, cf->desc);
+		if (desc) {
+			ut64 fsz = r_io_desc_size (desc);
 			if (fsz != UT64_MAX) {
 				pair ("size", sdb_fmt (0,"0x%"PFMT64x, fsz));
 				char *humansz = r_num_units (NULL, fsz);
@@ -248,13 +306,16 @@ static int cmd_info(void *data, const char *input) {
 	bool newline = r_config_get_i (core->config, "scr.interactive");
 	RBinObject *o = r_bin_cur_object (core->bin);
 	RCoreFile *cf = core->file;
+	RIODesc *desc = cf ? r_io_desc_get (core->io, cf->fd) : NULL;
 	int i, va = core->io->va || core->io->debug;
 	int mode = 0; //R_CORE_BIN_SIMPLE;
 	int is_array = 0;
 	Sdb *db;
 
-	for (i = 0; input[i] && i < 2; i++) {
-		switch (input[i]) {
+	for (i = 0; input[i] && input[i] != ' '; i++)
+		;
+	if (i > 0) {
+		switch (input[i - 1]) {
 		case '*': mode = R_CORE_BIN_RADARE; break;
 		case 'j': mode = R_CORE_BIN_JSON; break;
 		case 'q': mode = R_CORE_BIN_SIMPLE; break;
@@ -276,7 +337,6 @@ static int cmd_info(void *data, const char *input) {
 	if (!strcmp (input, "*")) {
 		input = "I*";
 	}
-	RBinObject *obj = r_bin_cur_object (core->bin);
 	while (*input) {
 		switch (*input) {
 		case 'b': // "ib"
@@ -342,7 +402,7 @@ static int cmd_info(void *data, const char *input) {
 				eprintf ("Core file not open\n");
 				return 0;
 			}
-			const char *fn = input[1] == ' '? input + 2: cf->desc->name;
+			const char *fn = input[1] == ' '? input + 2: desc->name;
 			ut64 baddr = r_config_get_i (core->config, "bin.baddr");
 			r_core_bin_load (core, fn, baddr);
 		}
@@ -393,7 +453,12 @@ static int cmd_info(void *data, const char *input) {
 				break;
 			}
 		case 'h': RBININFO ("fields", R_CORE_BIN_ACC_FIELDS, NULL, 0); break;
-		case 'l': RBININFO ("libs", R_CORE_BIN_ACC_LIBS, NULL, obj? r_list_length (obj->libs): 0); break;
+		case 'l':
+			  {
+				  RBinObject *obj = r_bin_cur_object (core->bin);
+				  RBININFO ("libs", R_CORE_BIN_ACC_LIBS, NULL, obj? r_list_length (obj->libs): 0);
+			  }
+			  break;
 		case 'L':
 		{
 			char *ptr = strchr (input, ' ');
@@ -432,17 +497,91 @@ static int cmd_info(void *data, const char *input) {
 				RBININFO ("symbols", R_CORE_BIN_ACC_SYMBOLS, NULL, obj? r_list_length (obj->symbols): 0);
 				break;
 			}
-		case 'R': 
+		case 'R':
 			if  (input[1] == '*') {
 				mode = R_CORE_BIN_RADARE;
 			} else if (input[1] == 'j') {
 				mode = R_CORE_BIN_JSON;
 			}
-			RBININFO ("resources", R_CORE_BIN_ACC_RESOURCES, NULL, 0); 
+			RBININFO ("resources", R_CORE_BIN_ACC_RESOURCES, NULL, 0);
 			break;
 		case 'r': RBININFO ("relocs", R_CORE_BIN_ACC_RELOCS, NULL, 0); break;
-		case 'd': RBININFO ("dwarf", R_CORE_BIN_ACC_DWARF, NULL, -1); break;
-		case 'i': RBININFO ("imports",R_CORE_BIN_ACC_IMPORTS, NULL, obj? r_list_length (obj->imports): 0); break;
+		case 'd': // "id"
+			if (input[1] == 'p') { // "idp"
+				int mode = false;
+				if (input[2] == '*') { // "idp*"
+					mode = true;
+					input++;
+				} else if (input[2] == 'd') { // "idpd"
+					SPDBOptions pdbopts;
+					pdbopts.user_agent = (char*) r_config_get (core->config, "pdb.useragent");
+					pdbopts.symbol_server = (char*) r_config_get (core->config, "pdb.server");
+					pdbopts.extract = r_config_get_i (core->config, "pdb.extract");
+					int r = r_bin_pdb_download (core, 0, NULL, &pdbopts);
+					if (r > 0) {
+						eprintf ("Error while downloading pdb file\n");
+					}
+					input += 2;
+					break;
+				}
+				input++;
+				char* filename = strchr (input, ' ');
+				if (filename) {
+					*filename++ = '\0';
+					char* args = strchr (filename, ' ');
+					if (args) {
+						*args = '\0';
+					}
+				} else {
+					/* Autodetect local file or download remote file */
+					RBinInfo *info = r_bin_get_info (core->bin);
+					if (!info || !info->debug_file_name) {
+						eprintf ("Cannot get file's debug information\n");
+						break;
+					}
+					bool local_file = r_file_exists (info->debug_file_name);
+					if (local_file) {
+						filename = info->debug_file_name;
+					} else {
+						r_core_cmd0 (core, "idpd");
+						filename = (char*) r_file_basename (info->debug_file_name);
+					}
+				}
+				// TODO Use R_IO api
+				int current_fd = r_core_bin_cur (core)->fd;
+				char* r = r_core_cmd_strf (core, "o %s", filename);
+				if (!r || !*r) {
+					//eprintf ("FixMe: Could not read file descriptor\n");
+					if (!r) {
+						if (!(r = strdup ("0"))) {
+							eprintf ("Error: strdup fail\n");
+							break;
+						}
+					}
+				}
+				int fd = atoi (r);
+				free (r);
+				if (fd < 0) {
+					eprintf ("Error while opening '%s'\n", filename);
+					break;
+				}
+				RCoreBinFilter filter = { 0 };
+				r_core_bin_info (core, R_CORE_BIN_ACC_PDB, mode, true, &filter, NULL);
+				r_core_cmdf (core, "o-%d", fd);
+				r_core_cmdf (core, "o %d", current_fd);
+			} else if (input[1] == '?') { // "id?"
+				r_core_cmd_help (core, help_msg_id);
+				input++;
+			} else { // "id"
+				RBININFO ("dwarf", R_CORE_BIN_ACC_DWARF, NULL, -1);
+			}
+			break;
+		case 'i': {
+				  RBinObject *obj = r_bin_cur_object (core->bin);
+				  RBININFO ("imports", R_CORE_BIN_ACC_IMPORTS, NULL,
+						  obj? r_list_length (obj->imports): 0);
+			  }
+			  break;
 		case 'I': RBININFO ("info", R_CORE_BIN_ACC_INFO, NULL, 0); break;
 		case 'e': RBININFO ("entries", R_CORE_BIN_ACC_ENTRIES, NULL, 0); break;
 		case 'M': RBININFO ("main", R_CORE_BIN_ACC_MAIN, NULL, 0); break;
@@ -488,8 +627,8 @@ static int cmd_info(void *data, const char *input) {
 			break;
 		case 'c': // for r2 `ic`
 			if (input[1] == '?') {
-				eprintf ("Usage: ic[ljq*] [class-index or name]\n");
-			} else if (input[1] == ' ' || input[1] == 'q' || input[1] == 'j' || input[1] == 'l') {
+				eprintf ("Usage: ic[ljqc*] [class-index or name]\n");
+			} else if (input[1] == ' ' || input[1] == 'q' || input[1] == 'j' || input[1] == 'l' || input[1] == 'c') {
 				RBinClass *cls;
 				RBinSymbol *sym;
 				RListIter *iter, *iter2;
@@ -537,7 +676,7 @@ static int cmd_info(void *data, const char *input) {
 									const char *comma = iter2->p? ",": "";
 
 									if (sym->method_flags) {
-										char *flags = r_core_bin_method_flags_str (sym, R_CORE_BIN_JSON);
+										char *flags = r_core_bin_method_flags_str (sym->method_flags, R_CORE_BIN_JSON);
 										r_cons_printf ("%s{\"name\":\"%s\",\"flags\":%s,\"vaddr\":%"PFMT64d "}",
 											comma, sym->name, flags, sym->vaddr);
 										R_FREE (flags);
@@ -551,7 +690,7 @@ static int cmd_info(void *data, const char *input) {
 							default:
 								r_cons_printf ("class %s\n", cls->name);
 								r_list_foreach (cls->methods, iter2, sym) {
-									char *flags = r_core_bin_method_flags_str (sym, 0);
+									char *flags = r_core_bin_method_flags_str (sym->method_flags, 0);
 									r_cons_printf ("0x%08"PFMT64x " method %s %s %s\n",
 										sym->vaddr, cls->name, flags, sym->name);
 									R_FREE (flags);
@@ -573,11 +712,15 @@ static int cmd_info(void *data, const char *input) {
 									r_cons_newline ();
 								}
 							}
+						} else if (input[1] == 'c' && obj) { // "icc"
+                					mode = R_CORE_BIN_CLASSDUMP;
+							RBININFO ("classes", R_CORE_BIN_ACC_CLASSES, NULL, r_list_length (obj->classes));
+							input = " ";
 						} else {
 							RBININFO ("classes", R_CORE_BIN_ACC_CLASSES, NULL, r_list_length (obj->classes));
 						}
 					}
-				}
+        			}
 			} else {
 				RBinObject *obj = r_bin_cur_object (core->bin);
 				int len = obj? r_list_length (obj->classes): 0;
@@ -591,51 +734,14 @@ static int cmd_info(void *data, const char *input) {
 			return 0;
 		case 'a':
 			switch (mode) {
-			case R_CORE_BIN_RADARE: cmd_info (core, "i*IiecsSmz"); break;
-			case R_CORE_BIN_JSON: cmd_info (core, "ijIiecsSmz"); break;
-			case R_CORE_BIN_SIMPLE: cmd_info (core, "iqIiecsSmz"); break;
+			case R_CORE_BIN_RADARE: cmd_info (core, "IieEcsSmz*"); break;
+			case R_CORE_BIN_JSON: cmd_info (core, "IieEcsSmzj"); break;
+			case R_CORE_BIN_SIMPLE: cmd_info (core, "IieEcsSmzq"); break;
 			default: cmd_info (core, "IiEecsSmz"); break;
 			}
 			break;
-		case '?': {
-			const char *help_message[] = {
-				"Usage: i", "", "Get info from opened file (see rabin2's manpage)",
-				"Output mode:", "", "",
-				"'*'", "", "Output in radare commands",
-				"'j'", "", "Output in json",
-				"'q'", "", "Simple quiet output",
-				"Actions:", "", "",
-				"i|ij", "", "Show info of current file (in JSON)",
-				"iA", "", "List archs",
-				"ia", "", "Show all info (imports, exports, sections..)",
-				"ib", "", "Reload the current buffer for setting of the bin (use once only)",
-				"ic", "", "List classes, methods and fields",
-				"iC", "", "Show signature info (entitlements, ...)",
-				"id", "", "Debug information (source lines)",
-				"iD", " lang sym", "demangle symbolname for given language",
-				"ie", "", "Entrypoint",
-				"iE", "", "Exports (global symbols)",
-				"ih", "", "Headers (alias for iH)",
-				"iHH", "", "Verbose Headers in raw text",
-				"ii", "", "Imports",
-				"iI", "", "Binary info",
-				"ik", " [query]", "Key-value database from RBinObject",
-				"il", "", "Libraries",
-				"iL ", "[plugin]", "List all RBin plugins loaded or plugin details",
-				"im", "", "Show info about predefined memory allocation",
-				"iM", "", "Show main address",
-				"io", " [file]", "Load info from file (or last opened) use bin.baddr",
-				"ir|iR", "", "Relocs",
-				"is", "", "Symbols",
-				"iS ", "[entropy,sha1]", "Sections (choose which hash algorithm to use)",
-				"iV", "", "Display file version info",
-				"iz|izj", "", "Strings in data sections (in JSON/Base64)",
-				"izz", "", "Search for Strings in the whole binary",
-				"iZ", "", "Guess size of binary program",
-				NULL
-			};
-			r_core_cmd_help (core, help_message);
-		}
+		case '?':
+			r_core_cmd_help (core, help_msg_i);
 			goto done;
 		case '*':
 			mode = R_CORE_BIN_RADARE;
@@ -655,8 +761,13 @@ static int cmd_info(void *data, const char *input) {
 			cmd_info_bin (core, va, mode);
 			break;
 		}
-		input++;
-		if ((*input == 'j' || *input == 'q') && !input[1]) {
+		// input can be overwritten like the 'input = " ";' a few lines above
+		if (input[0] != ' ') {
+			input++;
+			if ((*input == 'j' || *input == 'q') && (input[0] && !input[1])) {
+				break;
+			}
+		} else {
 			break;
 		}
 	}

@@ -1,8 +1,9 @@
-/* radare - LGPL - Copyright 2007-2016 - pancake */
+/* radare - LGPL - Copyright 2007-2017 - pancake */
 
 #include "r_types.h"
 #include "r_util.h"
 #include "r_cons.h"
+#include "r_bin.h"
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -136,10 +137,20 @@ R_API int r_str_replace_char(char *s, int a, int b) {
 	return ret;
 }
 
+R_API void r_str_reverse(char *str) {
+	int i, len = strlen (str);
+	int half = len / 2;
+	for (i = 0; i < half; i++) {
+		char ch = str[i];
+		str[i] = str[len - i - 1];
+		str[len - i - 1] = ch;
+	}
+}
+
 // TODO: do not use toupper.. must support modes to also append lowercase chars like in r1
 // TODO: this functions needs some stabilization
 R_API int r_str_bits(char *strout, const ut8 *buf, int len, const char *bitz) {
-	int i, j;
+	int i, j, idx;
 	if (bitz) {
 		for (i = j = 0; i<len && (!bitz||bitz[i]); i++) {
 			if (i > 0 && (i % 8) == 0) {
@@ -151,10 +162,9 @@ R_API int r_str_bits(char *strout, const ut8 *buf, int len, const char *bitz) {
 		}
 	} else {
 		for (i = j = 0; i < len; i++) {
-			if (i > 0 && (i % 8) == 0) {
-				buf++;
-			}
-			strout[j++] = (*buf & (1 << (7 - (i % 8))))? '1' : '0';
+			idx = (i / 8);
+			int bit = 7 - (i % 8);
+			strout[j++] = (buf[idx] & (1 << bit))? '1' : '0';
 		}
 	}
 	strout[j] = 0;
@@ -588,7 +598,7 @@ R_API char *r_str_ichr(char *str, char chr) {
 R_API const char *r_str_lchr(const char *str, char chr) {
 	if (str) {
 		int len = strlen (str);
-		for (;len >= 0; len--) {
+		for (; len >= 0; len--) {
 			if (str[len] == chr) {
 				return str + len;
 			}
@@ -787,12 +797,11 @@ R_API char *r_str_trim_head_tail(char *str) {
 	return r_str_trim_tail (r_str_trim_head (str));
 }
 
-// Copy all printable characters from src to dst, copy all printable characters
-// as '.'.
+// Secure string copy with null terminator (like strlcpy or strscpy but ours
 R_API void r_str_ncpy(char *dst, const char *src, int n) {
 	int i;
 	for (i = 0; src[i] && n > 0; i++, n--) {
-		dst[i] = IS_PRINTABLE (src[i])? src[i]: '.';
+		dst[i] = src[i];
 	}
 	dst[i] = 0;
 }
@@ -812,6 +821,9 @@ R_API int r_str_ccmp(const char *dst, const char *src, int ch) {
 // Compare two strings for the first len bytes. Returns true if they are equal.
 // NOTE: this is not useful as a comparitor, as it returns true or false.
 R_API int r_str_cmp(const char *a, const char *b, int len) {
+	if (!a || !b) {
+		return false;
+	}
 	if (a == b) {
 		return true;
 	}
@@ -859,7 +871,10 @@ R_API const char *r_str_get2(const char *str) {
 }
 
 R_API char *r_str_ndup(const char *ptr, int len) {
-	char *out = malloc (len+1);
+	if (len < 0) {
+		return NULL;
+	}
+	char *out = malloc (len + 1);
 	if (!out) {
 		return NULL;
 	}
@@ -896,6 +911,7 @@ R_API void r_str_writef(int fd, const char *fmt, ...) {
 	va_end (ap);
 }
 
+// TODO: rename to prepend
 R_API char *r_str_prefix(char *ptr, const char *string) {
 	int slen, plen;
 	if (!ptr) {
@@ -990,6 +1006,10 @@ R_API char* r_str_replace(char *str, const char *key, const char *val, int g) {
 	}
 	klen = strlen (key);
 	vlen = strlen (val);
+	if (klen == 1 && vlen < 2) {
+		r_str_replace_char (str, *key, *val);
+		return str;
+	}
 	if (klen == vlen && !strcmp (key, val)) {
 		return str;
 	}
@@ -1161,6 +1181,19 @@ R_API int r_str_unescape(char *buf) {
 			}
 			buf[i] = (ch << 4) + ch2;
 			memmove (buf + i + 1, buf + i + 4, strlen (buf + i + 4) + 1);
+		} else if (IS_OCTAL (buf[i + 1])) {
+			int num_digits = 1;
+			buf[i] = buf[i + 1] - '0';
+			if (IS_OCTAL (buf[i + 2])) {
+				num_digits++;
+				buf[i] = (ut8)buf[i] * 8 + (buf[i + 2] - '0');
+				if (IS_OCTAL (buf[i + 3])) {
+					num_digits++;
+					buf[i] = (ut8)buf[i] * 8 + (buf[i + 3] - '0');
+				}
+			}
+			memmove (buf + i + 1, buf + i + 1 + num_digits,
+			         strlen (buf + i + 1 + num_digits) + 1);
 		} else {
 			eprintf ("'\\x' expected.\n");
 			return 0; // -1?
@@ -1193,17 +1226,67 @@ R_API void r_str_sanitize(char *c) {
 	}
 }
 
+static void r_str_byte_escape(const char *p, char **dst, int dot_nl, bool default_dot) {
+	char *q = *dst;
+	switch (*p) {
+	case '\n':
+		*q++ = '\\';
+		*q++ = dot_nl ? 'l' : 'n';
+		break;
+	case '\r':
+		*q++ = '\\';
+		*q++ = 'r';
+		break;
+	case '\\':
+		*q++ = '\\';
+		*q++ = '\\';
+		break;
+	case '\t':
+		*q++ = '\\';
+		*q++ = 't';
+		break;
+	case '"' :
+		*q++ = '\\';
+		*q++ = '"';
+		break;
+	case '\f':
+		*q++ = '\\';
+		*q++ = 'f';
+		break;
+	case '\b':
+		*q++ = '\\';
+		*q++ = 'b';
+		break;
+	default:
+		/* Outside the ASCII printable range */
+		if (!IS_PRINTABLE (*p)) {
+			if (default_dot) {
+				*q++ = '.';
+			} else {
+				*q++ = '\\';
+				*q++ = 'x';
+				*q++ = "0123456789abcdef"[*p >> 4 & 0xf];
+				*q++ = "0123456789abcdef"[*p & 0xf];
+			}
+		} else {
+			*q++ = *p;
+		}
+	}
+	*dst = q;
+}
+
 /* Internal function. dot_nl specifies wheter to convert \n into the
  * graphiz-compatible newline \l */
-static char *r_str_escape_(const char *buf, const int dot_nl, const bool ign_esc_seq) {
+static char *r_str_escape_(const char *buf, int dot_nl, bool ign_esc_seq, bool show_asciidot) {
 	char *new_buf, *q;
 	const char *p;
 
 	if (!buf) {
 		return NULL;
 	}
-	/* Worst case scenario, we convert every byte */
-	new_buf = malloc (1 + (strlen (buf) * 4));
+	/* Worst case scenario, we convert every byte to a single-char escape
+	 * (e.g. \n) if show_asciidot, or \xhh if !show_asciidot */
+	new_buf = malloc (1 + strlen (buf) * (show_asciidot ? 2 : 4));
 	if (!new_buf) {
 		return NULL;
 	}
@@ -1211,34 +1294,6 @@ static char *r_str_escape_(const char *buf, const int dot_nl, const bool ign_esc
 	q = new_buf;
 	while (*p) {
 		switch (*p) {
-		case '\n':
-			*q++ = '\\';
-			*q++ = dot_nl? 'l': 'n';
-			break;
-		case '\r':
-			*q++ = '\\';
-			*q++ = 'r';
-			break;
-		case '\\':
-			*q++ = '\\';
-			*q++ = '\\';
-			break;
-		case '\t':
-			*q++ = '\\';
-			*q++ = 't';
-			break;
-		case '"' :
-			*q++ = '\\';
-			*q++ = '"';
-			break;
-		case '\f':
-			*q++ = '\\';
-			*q++ = 'f';
-			break;
-		case '\b':
-			*q++ = '\\';
-			*q++ = 'b';
-			break;
 		case 0x1b: // ESC
 			if (ign_esc_seq) {
 				p++;
@@ -1257,15 +1312,7 @@ static char *r_str_escape_(const char *buf, const int dot_nl, const bool ign_esc
 				break;
 			}
 		default:
-			/* Outside the ASCII printable range */
-			if (!IS_PRINTABLE (*p)) {
-				*q++ = '\\';
-				*q++ = 'x';
-				*q++ = "0123456789abcdef"[*p >> 4 & 0xf];
-				*q++ = "0123456789abcdef"[*p & 0xf];
-			} else {
-				*q++ = *p;
-			}
+			r_str_byte_escape (p, &q, dot_nl, show_asciidot);
 		}
 		p++;
 	}
@@ -1275,15 +1322,108 @@ out:
 }
 
 R_API char *r_str_escape(const char *buf) {
-	return r_str_escape_ (buf, false, true);
-}
-
-R_API char *r_str_escape_all(const char *buf) {
-	return r_str_escape_ (buf, false, false);
+	return r_str_escape_ (buf, false, true, false);
 }
 
 R_API char *r_str_escape_dot(const char *buf) {
-	return r_str_escape_ (buf, true, true);
+	return r_str_escape_ (buf, true, true, false);
+}
+
+R_API char *r_str_escape_latin1(const char *buf, bool show_asciidot) {
+	return r_str_escape_ (buf, false, false, show_asciidot);
+}
+
+static char *r_str_escape_utf(const char *buf, int buf_size, RStrEnc enc, bool show_asciidot) {
+	char *new_buf, *q;
+	const char *p, *end;
+	RRune ch;
+	int i, len, ch_bytes;
+
+	if (!buf) {
+		return NULL;
+	}
+	switch (enc) {
+	case R_STRING_ENC_UTF16LE:
+	case R_STRING_ENC_UTF32LE:
+		if (buf_size < 0) {
+			return NULL;
+		}
+		if (enc == R_STRING_ENC_UTF16LE) {
+			end = (char *)r_mem_mem_aligned ((ut8 *)buf, buf_size, (ut8 *)"\0\0", 2, 2);
+		} else {
+			end = (char *)r_mem_mem_aligned ((ut8 *)buf, buf_size, (ut8 *)"\0\0\0\0", 4, 4);
+		}
+		if (!end) {
+			end = buf + buf_size - 1;
+		}
+		len = end - buf;
+		break;
+	default:
+		len = strlen (buf);
+		end = buf + len;
+	}
+	/* Worst case scenario, we convert every byte to \xhh */
+	new_buf = malloc (1 + (len * 4));
+	if (!new_buf) {
+		return NULL;
+	}
+	p = buf;
+	q = new_buf;
+	while (p < end) {
+		switch (enc) {
+		case R_STRING_ENC_UTF16LE:
+		case R_STRING_ENC_UTF32LE:
+			ch_bytes = (enc == R_STRING_ENC_UTF16LE ?
+				    r_utf16le_decode ((ut8 *)p, end - p, &ch) :
+				    r_utf32le_decode ((ut8 *)p, end - p, &ch));
+			if (ch_bytes == 0) {
+				p++;
+				continue;
+			}
+			break;
+		default:
+			ch_bytes = r_utf8_decode ((ut8 *)p, end - p, &ch);
+			if (ch_bytes == 0) {
+				ch_bytes = 1;
+			}
+		}
+		if (show_asciidot && !IS_PRINTABLE(ch)) {
+			*q++ = '.';
+		} else if (ch_bytes > 1) {
+			*q++ = '\\';
+			*q++ = ch_bytes == 4 ? 'U' : 'u';
+			for (i = ch_bytes == 4 ? 6 : 2; i >= 0; i -= 2) {
+				*q++ = "0123456789abcdef"[ch >> 4 * (i + 1) & 0xf];
+				*q++ = "0123456789abcdef"[ch >> 4 * i & 0xf];
+			}
+		} else {
+			r_str_byte_escape (p, &q, false, false);
+		}
+		switch (enc) {
+		case R_STRING_ENC_UTF16LE:
+			p += ch_bytes < 2 ? 2 : ch_bytes;
+			break;
+		case R_STRING_ENC_UTF32LE:
+			p += 4;
+			break;
+		default:
+			p += ch_bytes;
+		}
+	}
+	*q = '\0';
+	return new_buf;
+}
+
+R_API char *r_str_escape_utf8(const char *buf, bool show_asciidot) {
+	return r_str_escape_utf (buf, -1, R_STRING_ENC_UTF8, show_asciidot);
+}
+
+R_API char *r_str_escape_utf16le(const char *buf, int buf_size, bool show_asciidot) {
+	return r_str_escape_utf (buf, buf_size, R_STRING_ENC_UTF16LE, show_asciidot);
+}
+
+R_API char *r_str_escape_utf32le(const char *buf, int buf_size, bool show_asciidot) {
+	return r_str_escape_utf (buf, buf_size, R_STRING_ENC_UTF32LE, show_asciidot);
 }
 
 /* ansi helpers */
@@ -1697,12 +1837,19 @@ R_API char **r_str_argv(const char *cmdline, int *_argc) {
 	int args_current = 0; // Current character index in  args
 	int arg_begin = 0; // Index of the first character of the current argument in args
 
-	if (!cmdline) {
+	if (!cmdline || argv_len < 1) {
 		return NULL;
 	}
 
 	argv = malloc (argv_len * sizeof (char *));
+	if (!argv) {
+		return NULL;
+	}
 	args = malloc (128 + strlen (cmdline) * sizeof (char)); // Unescaped args will be shorter, so strlen (cmdline) will be enough
+	if (!args) {
+		free (argv);
+		return NULL;
+	}
 	do {
 		// States for parsing args
 		int escaped = 0;
@@ -1727,6 +1874,7 @@ R_API char **r_str_argv(const char *cmdline, int *_argc) {
 				case '"':
 				case ' ':
 				case '\\':
+					args[args_current++] = '\\';
 					args[args_current++] = c;
 					break;
 				case '\0':
@@ -1803,11 +1951,38 @@ R_API void r_str_argv_free(char **argv) {
 	free (argv);
 }
 
+R_API const char *r_str_firstbut (const char *s, char ch, const char *but) {
+	int idx, _b = 0;
+	ut8 *b = (ut8*)&_b;
+	const char *isbut, *p;
+	const int bsz = sizeof (_b) * 8;
+	if (!but) {
+		return strchr (s, ch);
+	}
+	if (strlen (but) >= bsz) {
+		eprintf ("r_str_firstbut: but string too long\n");
+		return NULL;
+	}
+	for (p = s; *p; p++) {
+		isbut = strchr (but, *p);
+		if (isbut) {
+			idx = (int)(size_t)(isbut - but);
+			_b = R_BIT_SWAP(b, idx);
+			continue;
+		}
+		if (*p == ch && !_b) {
+			return p;
+		}
+	}
+	return NULL;
+}
+
+
 R_API const char *r_str_lastbut (const char *s, char ch, const char *but) {
 	int idx, _b = 0;
 	ut8 *b = (ut8*)&_b;
 	const char *isbut, *p, *lp = NULL;
-	const int bsz = sizeof (_b);
+	const int bsz = sizeof (_b) * 8;
 	if (!but) {
 		return r_str_lchr (s, ch);
 	}
@@ -1819,9 +1994,7 @@ R_API const char *r_str_lastbut (const char *s, char ch, const char *but) {
 		isbut = strchr (but, *p);
 		if (isbut) {
 			idx = (int)(size_t)(isbut - but);
-			_b = R_BIT_CHK (b, idx)?
-				R_BIT_UNSET (b, idx):
-				R_BIT_SET (b, idx);
+			_b = R_BIT_SWAP(b, idx);
 			continue;
 		}
 		if (*p == ch && !_b) {
@@ -2095,7 +2268,7 @@ R_API char *r_str_utf16_decode (const ut8 *s, int len) {
 	return result;
 }
 
-R_API char *r_str_utf16_encode (const char *s, int len) {
+R_API char *r_str_utf16_encode(const char *s, int len) {
 	int i;
 	char ch[4], *d, *od, *tmp;
 	if (!s) {
@@ -2626,4 +2799,145 @@ R_API const char *r_str_last(const char *str, const char *ch) {
 		str = ptr + 1;
 	} while (true);
 	return end;
+}
+
+// copies the WHOLE string but check n against non color code chars only.
+static int strncpy_with_color_codes(char *s1, char *s2, int n) {
+	int i = 0, j = 0;
+	int count = 0;
+	while (s2[j] && count < n) {
+		// detect (consecutive) color codes
+		while (s2[j] == 0x1b) {
+			// copy till 'm'
+			while (s2[j] && s2[j] != 'm') {
+				s1[i++] = s2[j++];
+			}
+			// copy 'm'
+			if (s2[j]) {
+				s1[i++] = s2[j++];
+			}
+		}
+		if (s2[j]) {
+			s1[i++] = s2[j++];
+			count++;
+		}
+	}
+	return i;
+}
+
+static int strncmp_skip_color_codes(const char *s1, const char *s2, int n) {
+	int i = 0, j = 0;
+	int count = 0;
+	for (i = 0, j = 0; s1[i]  && s2[j] && count < n; i++, j++, count++) {
+		while (s1[i] == 0x1b) {
+			while (s1[i] && s1[i] != 'm') { 
+				i++;
+			}
+			if (s1[i]) {
+				i++;
+			}
+		}
+		while (s2[j] == 0x1b) {
+			while (s2[j] && s2[j] != 'm') {
+				j++;
+			}
+			if (s2[j]) {
+				j++;
+			}
+		}
+		if (s1[i] != s2[j]) {
+			return -1;
+		}
+	}
+
+	if (count < n && s1[i] != s2[j]) {
+		return -1;
+	}
+
+	return 0;
+}
+
+static char *strchr_skip_color_codes(const char *s, int c) {
+	int i = 0;
+	for (i = 0; s[i]; i++) {
+		while (s[i] == 0x1b) {
+			while (s[i] && s[i] != 'm') {
+				i++;
+			}
+			if (s[i]) {
+				i++;
+			}
+		}
+		if (s[i] == (char)c) {
+			return (char*)s + i;
+		}
+	}
+	return NULL;
+}
+
+// Global buffer to speed up colorizing performance
+
+R_API char* r_str_highlight(char *str, const char *word, const char *color) {
+	if (!str || !*str) {
+		return NULL;
+	}
+	ut32 i = 0, j = 0, to_copy;
+	char *start = str;
+	ut32 l_str = strlen (str);
+	ut32 l_reset = strlen (Color_BGRESET);
+	ut32 l_color = color? strlen (color): 0;
+	if (!color) {
+		return strdup (str);
+	}
+	if (!word || !*word) {
+		return r_str_newf ("%s%s%s", color, str, Color_BGRESET);
+	}
+	ut32 l_word = strlen (word);
+	// XXX dont use static buffers
+	char o[1024] = {0};
+	while (start && (start < str + l_str)) {
+		int copied = 0;
+		// find first letter
+		start = strchr_skip_color_codes (str + i, *word);
+		if (start) {
+			to_copy = start - (str + i);
+			if (to_copy + j + 1 > sizeof (o)) {
+				// XXX. no limits
+				break;
+			}
+			strncpy (o + j, str + i, to_copy);
+			i += to_copy;
+			j += to_copy;
+			if (!strncmp_skip_color_codes (start, word, l_word)) {
+				if (j + strlen (color) >= sizeof (o)) {
+					// XXX. no limits
+					break;
+				}
+				strcpy (o + j, color);
+				j += l_color;
+				if (j + l_word >= sizeof (o)) {
+					// XXX. no limits
+					break;
+				}
+				copied = strncpy_with_color_codes (o + j, str + i, l_word);
+				i += copied;
+				j += copied;
+				if (j + strlen (Color_BGRESET) >= sizeof (o)) {
+					// XXX. no limits
+					break;
+				}
+				strcpy (o + j, Color_BGRESET);
+				j += l_reset;
+			} else {
+				o[j++] = str[i++];
+			}
+		} else {
+			if (j + strlen (str + i) >= sizeof (o)) {
+				break;
+			}
+			strcpy (o + j, str + i);
+			break;
+		}
+	}
+	return strdup (o);
 }

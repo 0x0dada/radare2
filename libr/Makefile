@@ -7,17 +7,15 @@ include ../mk/${COMPILER}.mk
 DESTDIR:=$(DESTDIR)
 PREFIX?=${PWD}/../prefix
 
-
-
 PWD=$(shell pwd)
 
 LIBS0=util hash
 LIBS1=socket reg cons magic bp search config
 LIBS2=syscall lang io crypto flag
-LIBS3=fs anal bin
-LIBS4=parse
-LIBS5=asm debug
-LIBS6=egg
+LIBS3=fs anal bin parse
+LIBS4=asm
+LIBS5=egg
+LIBS6=debug
 #LIBS6+=print
 LIBS7=core
 
@@ -60,7 +58,12 @@ libr.${EXT_AR}:
 	mv .libr/libr.${EXT_AR} libr.${EXT_AR}
 	echo ranlibin
 	${RANLIB} libr.${EXT_AR}
-	rm -rf .libr
+
+libr.${EXT_SO}:
+	rm -rf .libr/tcc
+	#xcrun --sdk iphoneos clang -shared -dynamic -arch arm64 -o libr.${EXT_SO} .libr/*/*.o ../shlr/gdb/lib/libgdbr.a
+	$(CC) -shared -dynamic -arch arm64 -o libr.${EXT_SO} .libr/*/*.o ../shlr/gdb/lib/libgdbr.a
+	#rm -rf .libr
 
 __AR=xcrun --sdk iphoneos ar
 __RANLIB=xcrun --sdk iphoneos ranlib
@@ -215,6 +218,7 @@ clean:
 	for LIB in ${LIBS}; do ( cd $${LIB} && ${MAKE} clean ); done
 
 mrproper:
+	rm -rf .libr libr.${LIB_SO} libr.${LIB_AR}
 	for LIB in ${LIBS}; do ( cd $${LIB} && ${MAKE} mrproper ); done
 
 .PHONY: sloc mrproper clean pkgcfg install deinstall uninstall libr
